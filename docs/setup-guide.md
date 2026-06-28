@@ -51,13 +51,7 @@ cursor --install-extension cursor-remote-0.1.46.vsix
 
 Or in Cursor: Command Palette (`Ctrl+Shift+P`) > **Extensions: Install from VSIX...** > select the file.
 
-### License Key
-
-Open the **CursorRemote** panel in the activity bar (left sidebar). Click "License Key Required" to enter your key. It's stored securely in the OS credential store.
-
-Get a key from the [store](https://cursor-remote.com/buy?utm_source=github&utm_medium=setup_guide&utm_campaign=license).
-
-### Server Lifecycle
+### Server lifecycle
 
 The server auto-starts when Cursor launches (if `cursorRemote.autoStart` is `true`). The sidebar panel shows live status:
 
@@ -121,10 +115,9 @@ Run the relay server directly from the command line. Useful for headless machine
 ### Install
 
 ```bash
-git clone https://github.com/len5ky/CursorRemote.git cursor-ide-remote
-cd cursor-ide-remote
-npm install
-cp .env.example .env
+git clone https://github.com/Belhun/CursorRemote.git
+cd CursorRemote
+npm run setup
 ```
 
 Edit `.env` -- the defaults work for the web client. For Telegram, set `TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN` (see section 5).
@@ -134,8 +127,6 @@ Edit `.env` -- the defaults work for the web client. For Telegram, set `TELEGRAM
 ```bash
 npm run dev
 ```
-
-**License key (first run only):** You'll be prompted for a license key. Get one from the [store](https://cursor-remote.com/buy?utm_source=github&utm_medium=setup_guide&utm_campaign=license). The key is saved to `data/license.key` and won't be asked again on subsequent runs. For production (`npm start`), ensure the key file exists before starting.
 
 ```
 [main] CDP URL: http://127.0.0.1:9222
@@ -273,7 +264,6 @@ The bot checks permissions and creates topics for all current windows. From now 
 - If HTML fails (unsupported tags), messages are retried as plain text
 - A **rate-limited send queue** prevents 429 errors (~300ms between Telegram sends, 100ms between edits; see `send-queue.ts` / transport config)
 - **Data files** in `data/` (all gitignored):
-  - `license.key` -- license key (required on first run)
   - `telegram-auth.json` -- registration token + registered users with usernames
   - `telegram-sync.json` -- sync state and group ID
   - `telegram-topics.json` -- topic mappings with high water mark
@@ -306,18 +296,11 @@ npm run build
 npm start
 ```
 
-Ensure `data/license.key` exists before running `npm start` (no prompt in production mode).
-
 ---
 
 ## 6. Troubleshooting
 
 ### General
-
-#### "No valid license key" or server exits immediately
-- **Extension:** Open the CursorRemote sidebar panel and click "License Key Required" to enter your key
-- **Standalone:** Run `npm run dev` (not `npm start`) to get the interactive prompt
-- Get a valid key from the [store](https://cursor-remote.com/buy?utm_source=github&utm_medium=setup_guide&utm_campaign=license)
 
 #### "Disconnected" in web UI
 - First check `http://<server>:<port>/health` from the phone or tablet

@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import type { ServerManager } from './server-manager.js';
-import type { LicenseManager } from './license-manager.js';
 import type { HealthData } from './status-bar.js';
 
 type TreeItem = vscode.TreeItem;
@@ -10,29 +9,18 @@ export class StatusTreeView implements vscode.TreeDataProvider<TreeItem> {
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private serverManager: ServerManager;
-  private licenseManager: LicenseManager;
-  private licensed = false;
   private version: string;
 
-  constructor(serverManager: ServerManager, licenseManager: LicenseManager, version: string) {
+  constructor(serverManager: ServerManager, version: string) {
     this.serverManager = serverManager;
-    this.licenseManager = licenseManager;
     this.version = version;
     serverManager.on('health', () => this.refresh());
     serverManager.on('stateChanged', () => this.refresh());
     serverManager.on('stopped', () => this.refresh());
-
-    licenseManager.checkLicense().then(valid => {
-      this.licensed = valid;
-      this.refresh();
-    });
   }
 
   refresh(): void {
-    this.licenseManager.checkLicense().then(valid => {
-      this.licensed = valid;
-      this._onDidChangeTreeData.fire(undefined);
-    });
+    this._onDidChangeTreeData.fire(undefined);
   }
 
   getTreeItem(element: TreeItem): TreeItem {
@@ -43,28 +31,6 @@ export class StatusTreeView implements vscode.TreeDataProvider<TreeItem> {
     if (element) return [];
 
     const items: TreeItem[] = [];
-
-    if (!this.licensed) {
-      const licenseItem = new vscode.TreeItem('License Key Required');
-      licenseItem.iconPath = new vscode.ThemeIcon('key', new vscode.ThemeColor('errorForeground'));
-      licenseItem.description = 'click to activate';
-      licenseItem.command = { command: 'cursorRemote.enterLicenseKey', title: 'Enter License Key' };
-      items.push(licenseItem);
-
-      const buyItem = new vscode.TreeItem('Buy License');
-      buyItem.iconPath = new vscode.ThemeIcon('credit-card');
-      buyItem.command = { command: 'cursorRemote.buyLicense', title: 'Buy License' };
-      items.push(buyItem);
-
-      items.push(separator());
-
-      const setupItem = new vscode.TreeItem('Open Setup Panel');
-      setupItem.iconPath = new vscode.ThemeIcon('gear');
-      setupItem.command = { command: 'cursorRemote.openSetup', title: 'Open Setup Panel' };
-      items.push(setupItem);
-
-      return items;
-    }
 
     const versionItem = new vscode.TreeItem(`CursorRemote v${this.version}`);
     versionItem.iconPath = new vscode.ThemeIcon('info');

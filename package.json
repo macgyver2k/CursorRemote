@@ -6,7 +6,7 @@
   "publisher": "cursor-remote",
   "repository": {
     "type": "git",
-    "url": "https://github.com/len5ky/CursorRemote"
+    "url": "https://github.com/Belhun/CursorRemote"
   },
   "type": "module",
   "main": "./dist/extension.cjs",
@@ -45,18 +45,6 @@
       {
         "command": "cursorRemote.showLogs",
         "title": "CursorRemote: Show Logs"
-      },
-      {
-        "command": "cursorRemote.enterLicenseKey",
-        "title": "CursorRemote: Enter License Key"
-      },
-      {
-        "command": "cursorRemote.buyLicense",
-        "title": "CursorRemote: Buy License"
-      },
-      {
-        "command": "cursorRemote.clearLicenseKey",
-        "title": "CursorRemote: Clear License Key"
       },
       {
         "command": "cursorRemote.openSetup",
@@ -167,17 +155,6 @@
         "description": "Monitor sessions, approve steps, and send tasks from your phone or Telegram.",
         "steps": [
           {
-            "id": "cursorRemote.walkthrough.license",
-            "title": "Enter License Key",
-            "description": "Enter your license key to activate CursorRemote.\n\n[Enter License Key](command:cursorRemote.enterLicenseKey)\n\nDon't have a key? [Buy one here](https://cursor-remote.com/buy?utm_source=extension&utm_medium=walkthrough&utm_campaign=license).",
-            "media": {
-              "markdown": "extension/media/walkthrough/license.md"
-            },
-            "completionEvents": [
-              "onCommand:cursorRemote.enterLicenseKey"
-            ]
-          },
-          {
             "id": "cursorRemote.walkthrough.cdp",
             "title": "Verify CDP Connection",
             "description": "Launch Cursor with `--remote-debugging-port=9222` and start the server.\n\n[Start Server](command:cursorRemote.start)",
@@ -226,7 +203,8 @@
     ]
   },
   "scripts": {
-    "dev": "mkdir -p temp data && tsx scripts/dev-wrapper.ts",
+    "dev": "mkdir -p temp data && tsx watch --exclude ./data/** --exclude ./temp/** src/server/index.ts",
+    "setup": "bash scripts/setup.sh",
     "build": "tsc && rm -rf dist/client && cp -r src/client dist/client && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map",
     "build:ext": "node extension/esbuild.js --production",
     "watch:ext": "node extension/esbuild.js --watch",

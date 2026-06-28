@@ -40,40 +40,64 @@ Remote control for your local Cursor AI agent — monitor sessions, approve step
 4. **Browser Client** displays the conversation in real time on any device
 5. **Telegram Bot** (optional) mirrors data into auto-created forum topics
 
-## Which Setup Should I Use?
+## Quick start
+
+Clone, set up, and run in three commands:
+
+```bash
+git clone https://github.com/Belhun/CursorRemote.git
+cd CursorRemote
+npm run setup
+```
+
+Then launch Cursor with CDP enabled and start the server:
+
+```bash
+cursor --remote-debugging-port=9222   # in a separate terminal
+npm run dev
+```
+
+Open `http://localhost:3000` in your browser. Set `WEBAPP_PASSWORD` in `.env` if you want to protect the web UI.
+
+To build and install the VS Code extension from source:
+
+```bash
+npm run build:ext
+cursor --install-extension releases/cursor-remote-*.vsix
+```
+
+The extension auto-starts the server when Cursor launches. No license key required.
+
+---
+
+## Which setup should I use?
 
 | | Extension (recommended) | Standalone |
 |---|---|---|
 | **Best for** | Daily use on your dev machine | Headless servers, CI, or manual configuration |
-| **Install** | One `.vsix` file | Clone repo + `npm install` |
+| **Install** | Build `.vsix` or clone + `npm run setup` | Clone + `npm run setup` |
 | **Configuration** | VS Code Settings + Setup Panel | `.env` file |
 | **Server lifecycle** | Auto-starts, sidebar Start/Stop | Manual `npm run dev` or `npm start` |
 | **Status UI** | Sidebar panel with live status | Terminal logs + `/health` endpoint |
-| **Password** | Auto-generated on first install | Manual in `.env` |
+| **Password** | Auto-generated on first install | Set in `.env` |
 | **Multi-window** | Singleton — one server across all windows | Single process |
 
 ---
 
-## Setup A: Extension (Recommended)
+## Setup A: Extension (recommended)
 
-### 1. Install the Extension
+### 1. Install the extension
 
-Download the latest `.vsix` from [releases](https://github.com/len5ky/CursorRemote/releases), then install:
+Build from source (or download a `.vsix` from [releases](https://github.com/Belhun/CursorRemote/releases)):
 
 ```bash
-# From the command line
-cursor --install-extension cursor-remote-0.1.46.vsix
+npm run build:ext
+cursor --install-extension releases/cursor-remote-*.vsix
 ```
 
-Or in Cursor: open the Command Palette (`Ctrl+Shift+P`), run **Extensions: Install from VSIX...**, and select the file.
+Or in Cursor: Command Palette (`Ctrl+Shift+P`) → **Extensions: Install from VSIX...** → select the file.
 
-### 2. Enter Your License Key
-
-Open the **CursorRemote** panel in the activity bar (left sidebar). You'll see a "License Key Required" prompt — click it to enter your key. It's stored securely in the OS credential store via VS Code's Secrets API.
-
-Don't have a key? Get one from the [store](https://cursor-remote.com/buy?utm_source=github&utm_medium=readme&utm_campaign=license).
-
-### 3. Launch Cursor with CDP Enabled
+### 2. Launch Cursor with CDP enabled
 
 Add `--remote-debugging-port=9222` to your Cursor shortcut, or run:
 
@@ -94,7 +118,7 @@ cursor --remote-debugging-port=9222
 
 **Important:** Fully quit and restart Cursor after adding the flag. On macOS use Cmd+Q (not just close the window). Verify: `http://localhost:9222/json` should return JSON.
 
-### 4. Server Auto-Starts
+### 3. Server auto-starts
 
 The extension automatically starts the relay server when Cursor launches. Check the **CursorRemote** sidebar panel for live status:
 
@@ -106,7 +130,7 @@ The extension automatically starts the relay server when Cursor launches. Check 
 
 If it doesn't auto-start, click **Start Server** in the sidebar or run **CursorRemote: Start Server** from the Command Palette.
 
-### 5. Configure Networking and Connect
+### 4. Configure networking and connect
 
 Run **CursorRemote: Open Setup Panel** (or click **Open Setup Panel** in the sidebar) to configure:
 
@@ -128,10 +152,8 @@ Open `http://<server-ip>:<port>` in any browser on your phone, tablet, or anothe
 | `CursorRemote: Open Web Client` | Open the browser client URL |
 | `CursorRemote: Open Setup Panel` | Open the networking and Telegram setup wizard |
 | `CursorRemote: Show Logs` | Show server logs in Output panel |
-| `CursorRemote: Enter License Key` | Enter and store a license key |
-| `CursorRemote: Buy License` | Open the store URL |
 
-### Extension Settings
+### Extension settings
 
 All settings are under `cursorRemote.*` in VS Code Settings. Each setting includes inline documentation with links to relevant guides.
 
@@ -162,17 +184,14 @@ Run the relay server directly from the command line — useful for headless mach
 - Cursor IDE with `--remote-debugging-port=9222`
 - A browser on the same network (for the web client)
 
-### Install and Run
+### Install and run
 
 ```bash
-git clone https://github.com/len5ky/CursorRemote.git cursor-ide-remote
-cd cursor-ide-remote
-npm install
-cp .env.example .env
+git clone https://github.com/Belhun/CursorRemote.git
+cd CursorRemote
+npm run setup
 npm run dev
 ```
-
-On first run, you'll be prompted for a **license key**. Get one from the [store](https://cursor-remote.com/buy?utm_source=github&utm_medium=readme_standalone&utm_campaign=license). The key is saved to `data/license.key`.
 
 Edit `.env` to configure the server. For Telegram, set `TELEGRAM_ENABLED=true` and `TELEGRAM_BOT_TOKEN`.
 
@@ -190,7 +209,6 @@ Edit `.env` to configure the server. For Telegram, set `TELEGRAM_ENABLED=true` a
 | `TELEGRAM_ENABLED` | `false` | Enable Telegram bot |
 | `TELEGRAM_BOT_TOKEN` | -- | Bot token from @BotFather |
 | `TELEGRAM_ALLOWED_USERS` | -- | Comma-separated allowed user IDs |
-| `LICENSE_KEY` | -- | License key via env (overrides file) |
 | `DATA_DIR` | `./data` | Data directory for persistent state |
 | `LOG_FORMAT` | `text` | Set to `json` for structured log lines |
 
@@ -200,8 +218,6 @@ Edit `.env` to configure the server. For Telegram, set `TELEGRAM_ENABLED=true` a
 npm run build
 npm start
 ```
-
-Ensure `data/license.key` exists before running `npm start` (no interactive prompt in production mode).
 
 > **WSL2 users**: see [Setup Guide](docs/setup-guide.md) for port forwarding details.
 
@@ -213,7 +229,7 @@ CursorRemote ships with secure defaults out of the box:
 
 - **Localhost-only** -- the server binds to `127.0.0.1` by default, so it's never exposed to the network until you explicitly choose to.
 - **Auto-generated password** (extension) -- a cryptographically random password is created on first install and used to protect the web client.
-- **Encrypted key storage** (extension) -- your license key and password are stored in the OS credential store via VS Code's Secrets API.
+- **Encrypted credential storage** (extension) -- your web client password is stored in the OS credential store via VS Code's Secrets API.
 
 ### Accessing from another device
 
@@ -225,7 +241,7 @@ Both options can be combined for defense in depth.
 
 ## Privacy
 
-CursorRemote is **100% self-hosted**. There is no phone-home, no telemetry, no analytics, no usage tracking. The software never connects to our servers — not at startup, not during use, not ever. License validation happens entirely offline against your local key. Your code, your conversations, and your agent activity stay on your machine and your network. We don't see any of it.
+CursorRemote is **100% self-hosted**. There is no phone-home, no telemetry, no analytics, no usage tracking. Your code, your conversations, and your agent activity stay on your machine and your network.
 
 ## Telegram Setup
 
@@ -262,7 +278,8 @@ Plain text in any topic is sent as a prompt to the mapped Cursor agent.
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Development with hot-reload (prompts for license key if missing) |
+| `npm run setup` | One-command install: deps, `.env`, data dirs |
+| `npm run dev` | Development with hot-reload |
 | `npm run build` | Compile TS + copy client |
 | `npm run build:ext` | Bundle the VS Code extension |
 | `npm run watch:ext` | Watch-mode for extension development |

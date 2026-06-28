@@ -1,5 +1,4 @@
 import { createWriteStream, appendFileSync, readFileSync } from 'fs';
-import { checkLicense } from './license.js';
 import { loadConfig, loadSelectors } from './config.js';
 import { CDPBridge } from './cdp-bridge.js';
 import { DOMExtractor } from './dom-extractor.js';
@@ -68,8 +67,6 @@ async function main(): Promise<void> {
   }
   console.log(`=== CursorRemote v${version} ===`);
   console.log();
-
-  checkLicense();
 
   const config = loadConfig();
   const selectors = loadSelectors(config);

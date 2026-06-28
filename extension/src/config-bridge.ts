@@ -2,7 +2,6 @@ import * as vscode from 'vscode';
 
 export function buildEnvFromConfig(
   context: vscode.ExtensionContext,
-  licenseKey: string | undefined
 ): Record<string, string> {
   const config = vscode.workspace.getConfiguration('cursorRemote');
   return {
@@ -18,7 +17,6 @@ export function buildEnvFromConfig(
     TELEGRAM_BOT_TOKEN: config.get<string>('telegram.botToken', ''),
     TELEGRAM_ALLOWED_USERS: config.get<string>('telegram.allowedUsers', ''),
     TELEGRAM_IMPL: config.get<string>('telegram.impl', 'grammy'),
-    LICENSE_KEY: licenseKey ?? '',
     DATA_DIR: context.globalStorageUri.fsPath,
     LOG_FORMAT: 'json',
   };
