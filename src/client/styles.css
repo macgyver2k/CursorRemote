@@ -2519,6 +2519,27 @@ pre code.hljs .hljs-meta .hljs-keyword,
   transform: translateX(16px);
 }
 
+/* --- Mobile --- */
+
+@media (max-width: 767px) {
+  .tool-collapsible-stage {
+    --cb-font: 10px;
+  }
+
+  .tool-collapsible-stage .code-block {
+    --cb-font: 10px;
+  }
+
+  .tool-collapsible-stage .tool-terminal-output,
+  .tool-terminal-output {
+    font-size: 9px;
+  }
+
+  .run-terminal-output {
+    font-size: 9px;
+  }
+}
+
 /* --- Desktop --- */
 
 @media (min-width: 768px) {
