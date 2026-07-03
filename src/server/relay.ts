@@ -720,19 +720,21 @@ export class Relay {
           const result =
             payload.scrollTo === "bottom"
               ? await this.commandExecutor.scrollChatToBottom(payload.commandId)
-              : typeof payload.messageId === "string"
-                ? await this.commandExecutor.scrollChatToMessage(
-                    payload.commandId,
-                    payload.messageId,
-                    typeof payload.scrollRatio === "number"
-                      ? payload.scrollRatio
-                      : 0,
-                  )
-                : {
-                    commandId: payload.commandId,
-                    ok: false,
-                    error: "Missing messageId or scrollTo",
-                  };
+              : payload.scrollTo === "up"
+                ? await this.commandExecutor.scrollChatUpPage(payload.commandId)
+                : typeof payload.messageId === "string"
+                  ? await this.commandExecutor.scrollChatToMessage(
+                      payload.commandId,
+                      payload.messageId,
+                      typeof payload.scrollRatio === "number"
+                        ? payload.scrollRatio
+                        : 0,
+                    )
+                  : {
+                      commandId: payload.commandId,
+                      ok: false,
+                      error: "Missing messageId or scrollTo",
+                    };
           socket.emit("command:result", result);
         },
       );

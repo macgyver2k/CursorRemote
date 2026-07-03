@@ -296,6 +296,21 @@ export class CommandExecutor {
     return this.clickApproval(commandId, selectorPath);
   }
 
+  async scrollChatUpPage(commandId: string): Promise<CommandResult> {
+    return this.withRetry(commandId, async (client) => {
+      await client.evaluate(`
+        (() => {
+          ${COMPOSER_SCROLL_JS}
+          const vp = findComposerMessagesViewport();
+          if (!vp) return false;
+          vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.85);
+          return true;
+        })()
+      `);
+      console.log("[command-executor] Scrolled chat up one page");
+    });
+  }
+
   async scrollChatUp(
     commandId: string,
     times: number = 5,

@@ -111,12 +111,17 @@
     let scrollSyncTimer = 0;
     let lastScrollSyncTarget = null;
 
+    const SCROLL_EDGE_THRESHOLD = 80;
+
     function isNearMessagesBottom() {
-      const threshold = 80;
       return (
         $messages.scrollTop + $messages.clientHeight >=
-        $messages.scrollHeight - threshold
+        $messages.scrollHeight - SCROLL_EDGE_THRESHOLD
       );
+    }
+
+    function isNearMessagesTop() {
+      return $messages.scrollTop <= SCROLL_EDGE_THRESHOLD;
     }
 
     function scheduleMessagesAutoScroll() {
@@ -271,6 +276,7 @@
           next.messages = [];
         }
       }
+      const prevMessageCount = state.messages.length;
       if (userScrolledUp && next.messages && !contextChanged) {
         next.messages = mergeMessagesPreservingHistory(
           state.messages,
@@ -278,6 +284,13 @@
         );
       }
       Object.assign(state, next);
+      if (
+        userScrolledUp &&
+        state.messages.length > prevMessageCount &&
+        lastScrollSyncTarget === "up"
+      ) {
+        lastScrollSyncTarget = null;
+      }
       renderAll();
     });
 
@@ -302,13 +315,30 @@
 
     function mergeMessagesPreservingHistory(existing, incoming) {
       if (!incoming?.length) return existing;
+      if (!existing?.length) return incoming;
+
       const incomingById = new Map(incoming.map((m) => [m.id, m]));
-      const merged = existing.map((m) => incomingById.get(m.id) ?? m);
-      const seen = new Set(existing.map((m) => m.id));
-      for (const m of incoming) {
-        if (!seen.has(m.id)) merged.push(m);
+      const updated = existing.map((m) => incomingById.get(m.id) ?? m);
+      const existingIds = new Set(existing.map((m) => m.id));
+
+      const firstOverlapIdx = incoming.findIndex((m) => existingIds.has(m.id));
+      if (firstOverlapIdx === -1) {
+        return incoming.length >= existing.length ? incoming : updated;
       }
-      return merged;
+
+      const prepend = incoming
+        .slice(0, firstOverlapIdx)
+        .filter((m) => !existingIds.has(m.id));
+
+      const lastOverlapIdx = incoming.reduce(
+        (last, m, i) => (existingIds.has(m.id) ? i : last),
+        -1,
+      );
+      const append = incoming
+        .slice(lastOverlapIdx + 1)
+        .filter((m) => !existingIds.has(m.id));
+
+      return [...prepend, ...updated, ...append];
     }
 
     function captureScrollAnchor() {
@@ -352,6 +382,14 @@
 
     function syncScrollToCursor() {
       if (!state.connected || state.messages.length === 0) return;
+
+      if (userScrolledUp && isNearMessagesTop()) {
+        if (lastScrollSyncTarget === "up") return;
+        lastScrollSyncTarget = "up";
+        emitScrollSync({ scrollTo: "up" });
+        return;
+      }
+
       if (userScrolledUp) return;
 
       if (!isNearMessagesBottom()) return;
@@ -364,8 +402,15 @@
     $messages.addEventListener("scroll", () => {
       autoScrollJob++;
       const wasScrolledUp = userScrolledUp;
+      const wasNearTop = isNearMessagesTop();
       userScrolledUp = !isNearMessagesBottom();
       if (wasScrolledUp && !userScrolledUp) {
+        lastScrollSyncTarget = null;
+      } else if (
+        wasNearTop &&
+        !isNearMessagesTop() &&
+        lastScrollSyncTarget === "up"
+      ) {
         lastScrollSyncTarget = null;
       }
       clearTimeout(scrollSyncTimer);

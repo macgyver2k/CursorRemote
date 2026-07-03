@@ -357,7 +357,7 @@ export interface CommandPayload {
   toolCallId?: string;
   scrollRatio?: number;
   flatIndex?: number;
-  scrollTo?: "bottom";
+  scrollTo?: "bottom" | "up";
   approvalId?: string;
   actionType?: string;
   selectorPath?: string;
