@@ -695,7 +695,12 @@
       if (userScrolledUp && anchor) {
         restoreScrollAnchor(anchor);
       } else if (!userScrolledUp) {
-        scheduleMessagesAutoScroll();
+        const nestedToolScroll = $messages.querySelector(
+          ".tool-collapsible-stage.is-expanded .code-block-viewport, .tool-collapsible-stage.is-expanded .tool-terminal-output",
+        );
+        const nestedScrolled =
+          nestedToolScroll && nestedToolScroll.scrollTop > 8;
+        if (!nestedScrolled) scheduleMessagesAutoScroll();
       }
       checkMessagesForNotifications();
     }
@@ -831,76 +836,9 @@
 
     // --- Assistant message ---
 
-    let codeBlockFsOverlay = null;
-
-    function closeCodeBlockFullscreen() {
-      if (!codeBlockFsOverlay) return;
-      codeBlockFsOverlay.remove();
-      codeBlockFsOverlay = null;
-      document.body.style.overflow = "";
-      document.removeEventListener("keydown", onCodeBlockFsKeydown);
-    }
-
-    function onCodeBlockFsKeydown(e) {
-      if (e.key === "Escape") closeCodeBlockFullscreen();
-    }
-
-    /** Full-screen overlay for long code/diff (mobile-friendly scroll + safe areas). */
-    function openCodeBlockFullscreen(wrapper) {
-      closeCodeBlockFullscreen();
-      const viewport = wrapper.querySelector(".code-block-viewport");
-      const headerEl = wrapper.querySelector(".code-block-header");
-      const title = (headerEl && headerEl.textContent.trim()) || "Code";
-
-      const overlay = document.createElement("div");
-      overlay.className = "code-block-fs-overlay";
-      overlay.setAttribute("role", "dialog");
-      overlay.setAttribute("aria-modal", "true");
-      overlay.setAttribute("aria-label", title);
-
-      const backdrop = document.createElement("div");
-      backdrop.className = "code-block-fs-backdrop";
-      backdrop.addEventListener("click", closeCodeBlockFullscreen);
-
-      const panel = document.createElement("div");
-      panel.className = "code-block-fs-panel";
-
-      const panelHead = document.createElement("div");
-      panelHead.className = "code-block-fs-panel-header";
-      const titleSpan = document.createElement("span");
-      titleSpan.className = "code-block-fs-title";
-      titleSpan.textContent = title;
-      const closeBtn = document.createElement("button");
-      closeBtn.type = "button";
-      closeBtn.className = "code-block-fs-close";
-      closeBtn.setAttribute("aria-label", "Close");
-      closeBtn.textContent = "\u2715";
-      closeBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        closeCodeBlockFullscreen();
-      });
-      panelHead.appendChild(titleSpan);
-      panelHead.appendChild(closeBtn);
-
-      const scroll = document.createElement("div");
-      scroll.className = "code-block-fs-scroll";
-      if (viewport && viewport.firstElementChild) {
-        scroll.appendChild(viewport.firstElementChild.cloneNode(true));
-      }
-
-      panel.appendChild(panelHead);
-      panel.appendChild(scroll);
-      overlay.appendChild(backdrop);
-      overlay.appendChild(panel);
-      document.body.appendChild(overlay);
-      codeBlockFsOverlay = overlay;
-      document.body.style.overflow = "hidden";
-      document.addEventListener("keydown", onCodeBlockFsKeydown);
-      closeBtn.focus();
-    }
-
     /** Native code/diff from server `CodeBlockItem` (no mirrored Monaco HTML). */
-    function createNativeBlockFromItem(item, filenameFallback) {
+    function createNativeBlockFromItem(item, filenameFallback, options) {
+      const hideTitle = options?.hideTitle === true;
       const wrapper = document.createElement("div");
       wrapper.className = "code-block native-code-block";
 
@@ -910,29 +848,15 @@
         filenameFallback ||
         ""
       ).trim();
-      const toolbar = document.createElement("div");
-      toolbar.className =
-        "code-block-toolbar" +
-        (title ? "" : " code-block-toolbar--actions-only");
-      if (title) {
+      if (title && !hideTitle) {
+        const toolbar = document.createElement("div");
+        toolbar.className = "code-block-toolbar";
         const header = document.createElement("div");
         header.className = "code-block-header";
         header.textContent = title;
         toolbar.appendChild(header);
+        wrapper.appendChild(toolbar);
       }
-
-      const expandBtn = document.createElement("button");
-      expandBtn.type = "button";
-      expandBtn.className = "code-block-fullscreen-btn";
-      expandBtn.setAttribute("aria-label", "View full screen");
-      expandBtn.innerHTML =
-        '<svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
-      expandBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openCodeBlockFullscreen(wrapper);
-      });
-      toolbar.appendChild(expandBtn);
-      wrapper.appendChild(toolbar);
 
       const viewport = document.createElement("div");
       viewport.className = "code-block-viewport";
@@ -1026,6 +950,132 @@
 
     // --- Tool call ---
 
+    function setCollapsibleStageExpanded(stage, expanded) {
+      stage.classList.toggle("is-expanded", expanded);
+      stage.classList.toggle("is-compact", !expanded);
+      const btn = stage.querySelector(".tool-diff-resize-btn");
+      btn?.setAttribute("aria-expanded", expanded ? "true" : "false");
+      btn?.setAttribute(
+        "aria-label",
+        expanded ? "Diff verkleinern" : "Diff erweitern",
+      );
+    }
+
+    function createCollapsibleStage(inner) {
+      const stage = document.createElement("div");
+      stage.className = "tool-collapsible-stage is-compact";
+
+      const body = document.createElement("div");
+      body.className = "tool-collapsible-stage-body";
+      body.appendChild(inner);
+      stage.appendChild(body);
+
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "tool-diff-resize-btn";
+      btn.setAttribute("aria-expanded", "false");
+      btn.setAttribute("aria-label", "Diff erweitern");
+
+      const chevron = document.createElement("span");
+      chevron.className = "tool-diff-resize-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.innerHTML =
+        '<svg viewBox="0 0 16 10" width="14" height="9" aria-hidden="true"><path fill="currentColor" d="M2 2l6 5 6-5"/><path fill="currentColor" d="M2 5.5l6 5 6-5"/></svg>';
+      btn.appendChild(chevron);
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setCollapsibleStageExpanded(
+          stage,
+          !stage.classList.contains("is-expanded"),
+        );
+      });
+
+      stage.appendChild(btn);
+      return stage;
+    }
+
+    function bindToolExpandHeader(header, panel) {
+      header.className = "tool-expand-header tool-expand-header--interactive";
+      header.setAttribute("role", "button");
+      header.setAttribute("tabindex", "0");
+      header.setAttribute("aria-expanded", "true");
+
+      const onToggle = () => {
+        const minimized = !panel.classList.contains("is-minimized");
+        panel.classList.toggle("is-minimized", minimized);
+        header.setAttribute("aria-expanded", minimized ? "false" : "true");
+        if (!minimized) {
+          panel
+            .querySelectorAll(".tool-collapsible-stage.is-expanded")
+            .forEach((stage) => setCollapsibleStageExpanded(stage, false));
+        }
+      };
+
+      header.addEventListener("click", onToggle);
+      header.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle();
+        }
+      });
+    }
+
+    function captureCollapsibleStageStates(root) {
+      const states = [];
+      if (!root) return states;
+      root.querySelectorAll(".tool-collapsible-stage").forEach((stage) => {
+        states.push(stage.classList.contains("is-expanded"));
+      });
+      return states;
+    }
+
+    function restoreCollapsibleStageStates(root, states) {
+      if (!root || !states.length) return;
+      root.querySelectorAll(".tool-collapsible-stage").forEach((stage, i) => {
+        if (!states[i]) return;
+        setCollapsibleStageExpanded(stage, true);
+      });
+    }
+
+    function captureToolNestedScroll(root) {
+      const saved = [];
+      if (!root) return saved;
+      root
+        .querySelectorAll(
+          ".tool-collapsible-stage .code-block-viewport, .tool-terminal-output",
+        )
+        .forEach((node) => {
+          saved.push({ node, top: node.scrollTop });
+        });
+      return saved;
+    }
+
+    function restoreToolNestedScroll(saved) {
+      for (const { node, top } of saved) {
+        if (node.isConnected) node.scrollTop = top;
+      }
+    }
+
+    function mountToolDiffBlock(host, item, filenameFallback) {
+      const db = item;
+      const key = JSON.stringify({
+        bk: db.blockKind,
+        c: db.code,
+        d: db.diffLines,
+      });
+      if (host._nativeDiffKey === key) return;
+      const viewport = host.querySelector(".code-block-viewport");
+      const scrollTop = viewport?.scrollTop ?? 0;
+      host._nativeDiffKey = key;
+      host.innerHTML = "";
+      host.appendChild(
+        createNativeBlockFromItem(db, filenameFallback, { hideTitle: true }),
+      );
+      const nextViewport = host.querySelector(".code-block-viewport");
+      if (nextViewport) nextViewport.scrollTop = scrollTop;
+    }
+
     function fileEntryHasDiff(file) {
       const db = file?.diffBlock;
       return !!(
@@ -1054,7 +1104,8 @@
       });
     }
 
-    function buildToolLine(msg) {
+    function buildToolLine(msg, opts) {
+      const compactHeader = opts?.compactHeader === true;
       const line = document.createElement("div");
       line.className = "tool-line " + msg.status;
 
@@ -1063,23 +1114,25 @@
       icon.textContent = msg.status === "completed" ? "\u2713" : "\u2022";
       line.appendChild(icon);
 
-      if (msg.summaryText) {
-        const summary = document.createElement("span");
-        summary.className = "tool-summary";
-        summary.textContent = msg.summaryText;
-        line.appendChild(summary);
-      } else {
-        if (msg.action) {
-          const action = document.createElement("span");
-          action.className = "tool-action";
-          action.textContent = msg.action;
-          line.appendChild(action);
-        }
-        if (msg.details) {
-          const details = document.createElement("span");
-          details.className = "tool-details";
-          details.textContent = msg.details;
-          line.appendChild(details);
+      if (!compactHeader) {
+        if (msg.summaryText) {
+          const summary = document.createElement("span");
+          summary.className = "tool-summary";
+          summary.textContent = msg.summaryText;
+          line.appendChild(summary);
+        } else {
+          if (msg.action) {
+            const action = document.createElement("span");
+            action.className = "tool-action";
+            action.textContent = msg.action;
+            line.appendChild(action);
+          }
+          if (msg.details) {
+            const details = document.createElement("span");
+            details.className = "tool-details";
+            details.textContent = msg.details;
+            line.appendChild(details);
+          }
         }
       }
 
@@ -1133,83 +1186,71 @@
       return line;
     }
 
-    function createToolFileListItem(file) {
+    function createToolFileEntry(file) {
       const item = document.createElement("div");
-      item.className = "tool-file-item is-open";
+      item.className = "tool-file-entry";
 
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "tool-file-toggle";
-      toggle.setAttribute("aria-expanded", "true");
-
-      const chevron = document.createElement("span");
-      chevron.className = "tool-file-chevron";
-      chevron.setAttribute("aria-hidden", "true");
-      chevron.textContent = "\u25BE";
-      toggle.appendChild(chevron);
-
+      const label = document.createElement("div");
+      label.className = "tool-file-label";
       const fn = document.createElement("span");
       fn.className = "tool-filename";
       fn.textContent = file.filename;
-      toggle.appendChild(fn);
-
+      label.appendChild(fn);
       if (file.additions != null) {
         const add = document.createElement("span");
         add.className = "tool-additions";
         add.textContent = "+" + file.additions;
-        toggle.appendChild(add);
+        label.appendChild(add);
       }
       if (file.deletions != null) {
         const del = document.createElement("span");
         del.className = "tool-deletions";
         del.textContent = "-" + file.deletions;
-        toggle.appendChild(del);
+        label.appendChild(del);
       }
+      item.appendChild(label);
 
-      toggle.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const open = item.classList.toggle("is-open");
-        toggle.setAttribute("aria-expanded", open ? "true" : "false");
-      });
-
-      item.appendChild(toggle);
-
-      const body = document.createElement("div");
-      body.className = "tool-file-body";
       if (fileEntryHasDiff(file)) {
         const host = document.createElement("div");
         host.className = "tool-diff-host";
-        host.appendChild(
-          createNativeBlockFromItem(file.diffBlock, file.filename),
-        );
-        body.appendChild(host);
+        mountToolDiffBlock(host, file.diffBlock, file.filename);
+        item.appendChild(createCollapsibleStage(host));
       }
-      item.appendChild(body);
 
       return item;
     }
 
-    function syncToolExpandBody(body, msg) {
-      if (!body) return;
+    function syncToolExpandBody(content, msg) {
+      if (!content) return;
       const key = toolExpandableKey(msg);
-      if (body._toolExpandKey === key) return;
-      body._toolExpandKey = key;
-      body.innerHTML = "";
+      if (content._toolExpandKey === key) return;
+      const root = content.closest(".el-tool");
+      const stageStates = captureCollapsibleStageStates(root);
+      const scrollSaved = captureToolNestedScroll(root);
+      content._toolExpandKey = key;
+      content.innerHTML = "";
 
-      if (Array.isArray(msg.files) && msg.files.length > 0) {
+      if (Array.isArray(msg.files) && msg.files.length > 1) {
         const list = document.createElement("div");
         list.className = "tool-file-list";
         for (const file of msg.files) {
-          list.appendChild(createToolFileListItem(file));
+          list.appendChild(createToolFileEntry(file));
         }
-        body.appendChild(list);
+        content.appendChild(list);
+      } else if (
+        Array.isArray(msg.files) &&
+        msg.files.length === 1 &&
+        fileEntryHasDiff(msg.files[0])
+      ) {
+        const host = document.createElement("div");
+        host.className = "tool-diff-host";
+        mountToolDiffBlock(host, msg.files[0].diffBlock, msg.files[0].filename);
+        content.appendChild(createCollapsibleStage(host));
       } else if (fileEntryHasDiff({ diffBlock: msg.diffBlock })) {
         const host = document.createElement("div");
         host.className = "tool-diff-host";
-        host.appendChild(
-          createNativeBlockFromItem(msg.diffBlock, msg.filename),
-        );
-        body.appendChild(host);
+        mountToolDiffBlock(host, msg.diffBlock, msg.filename);
+        content.appendChild(createCollapsibleStage(host));
       }
 
       if (msg.command && String(msg.command).trim()) {
@@ -1223,14 +1264,70 @@
         cmdText.textContent = msg.command;
         cmdWrap.appendChild(prompt);
         cmdWrap.appendChild(cmdText);
-        body.appendChild(cmdWrap);
+        content.appendChild(cmdWrap);
       }
 
       if (msg.output && String(msg.output).trim()) {
         const out = document.createElement("pre");
         out.className = "tool-terminal-output";
         out.textContent = msg.output;
-        body.appendChild(out);
+        const hasDiff =
+          content.querySelector(".tool-diff-host") ||
+          (Array.isArray(msg.files) &&
+            msg.files.some((f) => fileEntryHasDiff(f)));
+        if (hasDiff) {
+          content.appendChild(out);
+        } else {
+          content.appendChild(createCollapsibleStage(out));
+        }
+      }
+
+      restoreCollapsibleStageStates(root, stageStates);
+      requestAnimationFrame(() => restoreToolNestedScroll(scrollSaved));
+    }
+
+    function syncToolDiffContent(el, msg) {
+      const content = el.querySelector(".tool-expand-content");
+      if (!content) return;
+      const key = toolExpandableKey(msg);
+      if (content._toolExpandKey !== key) {
+        syncToolExpandBody(content, msg);
+        return;
+      }
+      if (Array.isArray(msg.files) && msg.files.length > 1) {
+        const entries = content.querySelectorAll(".tool-file-entry");
+        msg.files.forEach((file, i) => {
+          const host = entries[i]?.querySelector(".tool-diff-host");
+          if (host && fileEntryHasDiff(file)) {
+            mountToolDiffBlock(host, file.diffBlock, file.filename);
+          }
+        });
+        return;
+      }
+      if (
+        Array.isArray(msg.files) &&
+        msg.files.length === 1 &&
+        fileEntryHasDiff(msg.files[0])
+      ) {
+        const host = content.querySelector(".tool-diff-host");
+        if (host) {
+          mountToolDiffBlock(
+            host,
+            msg.files[0].diffBlock,
+            msg.files[0].filename,
+          );
+        }
+        return;
+      }
+      const host = content.querySelector(".tool-diff-host");
+      if (host && fileEntryHasDiff({ diffBlock: msg.diffBlock })) {
+        mountToolDiffBlock(host, msg.diffBlock, msg.filename);
+      }
+      const out = content.querySelector(".tool-terminal-output");
+      if (out && msg.output && out.textContent !== msg.output) {
+        const scrollTop = out.scrollTop;
+        out.textContent = msg.output;
+        out.scrollTop = scrollTop;
       }
     }
 
@@ -1239,36 +1336,25 @@
       el.className = "chat-el el-tool";
       el.dataset.id = msg.id;
 
-      const line = buildToolLine(msg);
       const expandable = toolHasExpandableContent(msg);
+      const compactHeader = expandable && !!(msg.filename || msg.files?.length);
+      const line = buildToolLine(msg, { compactHeader });
 
       if (expandable) {
         const panel = document.createElement("div");
-        panel.className = "tool-expand-panel is-open";
+        panel.className = "tool-expand-panel";
 
-        const toggle = document.createElement("button");
-        toggle.type = "button";
-        toggle.className = "tool-expand-toggle";
-        toggle.setAttribute("aria-expanded", "true");
+        const header = document.createElement("div");
+        header.className = "tool-expand-header";
+        header.appendChild(line);
+        bindToolExpandHeader(header, panel);
+        panel.appendChild(header);
 
-        const chevron = document.createElement("span");
-        chevron.className = "tool-expand-chevron";
-        chevron.setAttribute("aria-hidden", "true");
-        chevron.textContent = "\u25BE";
-        toggle.appendChild(chevron);
-        toggle.appendChild(line);
+        const content = document.createElement("div");
+        content.className = "tool-expand-content";
+        syncToolExpandBody(content, msg);
+        panel.appendChild(content);
 
-        const body = document.createElement("div");
-        body.className = "tool-expand-body";
-        syncToolExpandBody(body, msg);
-
-        toggle.addEventListener("click", () => {
-          const open = panel.classList.toggle("is-open");
-          toggle.setAttribute("aria-expanded", open ? "true" : "false");
-        });
-
-        panel.appendChild(toggle);
-        panel.appendChild(body);
         el.appendChild(panel);
       } else {
         el.appendChild(line);
@@ -1285,30 +1371,45 @@
     }
 
     function updateToolEl(el, msg) {
-      const wasOpen =
-        el.querySelector(".tool-expand-panel")?.classList.contains("is-open") ??
-        true;
-      const fresh = createToolEl(msg);
-      const oldPanel = el.querySelector(".tool-expand-panel");
-      const newPanel = fresh.querySelector(".tool-expand-panel");
+      const scrollSaved = captureToolNestedScroll(el);
+      const stageStates = captureCollapsibleStageStates(el);
 
-      if (oldPanel && newPanel) {
-        oldPanel.replaceWith(newPanel);
-      } else if (!oldPanel && newPanel) {
+      const expandable = toolHasExpandableContent(msg);
+      const compactHeader = expandable && !!(msg.filename || msg.files?.length);
+      const newLine = buildToolLine(msg, { compactHeader });
+
+      const panel = el.querySelector(".tool-expand-panel");
+      const wasMinimized = panel?.classList.contains("is-minimized") ?? false;
+
+      if (panel && expandable) {
+        const lineSlot = panel.querySelector(".tool-line");
+        if (lineSlot && newLine) lineSlot.replaceWith(newLine);
+        syncToolDiffContent(el, msg);
+        restoreCollapsibleStageStates(el, stageStates);
+        if (wasMinimized) {
+          panel.classList.add("is-minimized");
+          panel
+            .querySelector(".tool-expand-header")
+            ?.setAttribute("aria-expanded", "false");
+        }
+      } else if (!panel && expandable) {
+        const fresh = createToolEl(msg);
+        const newPanel = fresh.querySelector(".tool-expand-panel");
         el.querySelector(".tool-line")?.remove();
         const actions = el.querySelector(".tool-actions-row");
-        if (actions) el.insertBefore(newPanel, actions);
-        else el.appendChild(newPanel);
-      } else if (oldPanel && !newPanel) {
-        const newLine = fresh.querySelector(".tool-line");
-        if (newLine) oldPanel.replaceWith(newLine);
-        else oldPanel.remove();
+        if (newPanel) {
+          if (actions) el.insertBefore(newPanel, actions);
+          else el.appendChild(newPanel);
+        }
+      } else if (panel && !expandable) {
+        if (newLine) panel.replaceWith(newLine);
+        else panel.remove();
       } else {
-        const oldLine = el.querySelector(".tool-line");
-        const newLine = fresh.querySelector(".tool-line");
-        if (oldLine && newLine) oldLine.replaceWith(newLine);
+        const lineSlot = el.querySelector(".tool-line");
+        if (lineSlot && newLine) lineSlot.replaceWith(newLine);
       }
 
+      const fresh = createToolEl(msg);
       const newActions = fresh.querySelector(".tool-actions-row");
       const oldActions = el.querySelector(".tool-actions-row");
       if (newActions && oldActions) {
@@ -1319,15 +1420,7 @@
         oldActions.remove();
       }
 
-      if (!wasOpen) {
-        const panel = el.querySelector(".tool-expand-panel");
-        if (panel) {
-          panel.classList.remove("is-open");
-          panel
-            .querySelector(".tool-expand-toggle")
-            ?.setAttribute("aria-expanded", "false");
-        }
-      }
+      requestAnimationFrame(() => restoreToolNestedScroll(scrollSaved));
     }
 
     // --- Thought block ---
