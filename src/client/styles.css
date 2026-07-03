@@ -406,7 +406,8 @@ header {
   );
   overflow: auto;
   -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
+  overscroll-behavior: auto;
+  touch-action: pan-x pan-y;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
@@ -445,11 +446,17 @@ header {
   display: none;
 }
 
+.tool-collapsible-stage .code-block {
+  overflow: visible;
+}
+
 .tool-collapsible-stage .code-block-viewport,
 .tool-collapsible-stage .tool-terminal-output,
 .tool-collapsible-stage .code-block-diff-plain {
   max-height: none;
   overflow: visible;
+  width: fit-content;
+  min-width: 100%;
 }
 
 .tool-diff-resize-btn {
