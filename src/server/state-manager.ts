@@ -345,6 +345,11 @@ export class StateManager extends EventEmitter {
       hasChange = true;
     }
 
+    if (prev.activeComposerId !== next.activeComposerId) {
+      patch.activeComposerId = next.activeComposerId;
+      hasChange = true;
+    }
+
     if (prev.mode?.current !== next.mode?.current) {
       patch.mode = next.mode;
       hasChange = true;

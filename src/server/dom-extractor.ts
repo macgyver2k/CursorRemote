@@ -2516,6 +2516,11 @@ export class DOMExtractor {
     this.client = client;
   }
 
+  requestPoll(): void {
+    if (!this.running) return;
+    this.scheduleNextPoll(0);
+  }
+
   private scheduleNextPoll(delayMs = this.currentPollIntervalMs): void {
     if (!this.running) return;
     if (this.pollTimer) {

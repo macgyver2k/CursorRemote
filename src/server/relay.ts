@@ -7,6 +7,7 @@ import { Server as SocketServer, type Socket } from "socket.io";
 import { fileURLToPath } from "url";
 import type { CDPBridge } from "./cdp-bridge.js";
 import type { CommandExecutor } from "./command-executor.js";
+import type { DOMExtractor } from "./dom-extractor.js";
 import { markdownToWebHtml, readPlanFile } from "./plan-files.js";
 import type { StateManager } from "./state-manager.js";
 import type {
@@ -122,6 +123,7 @@ export class Relay {
   private commandExecutor: CommandExecutor;
   private cdpBridge: CDPBridge;
   private windowMonitor: WindowMonitor | null;
+  private extractor: DOMExtractor | null;
 
   private sessionStore: WebappSessionStore;
   private loginAttempts = new Map<string, RateLimitEntry>();
@@ -139,12 +141,14 @@ export class Relay {
     commandExecutor: CommandExecutor,
     cdpBridge: CDPBridge,
     windowMonitor?: WindowMonitor,
+    extractor?: DOMExtractor,
   ) {
     this.config = config;
     this.stateManager = stateManager;
     this.commandExecutor = commandExecutor;
     this.cdpBridge = cdpBridge;
     this.windowMonitor = windowMonitor ?? null;
+    this.extractor = extractor ?? null;
     this.sessionStore = createWebappSessionStore(config.dataDir);
 
     this.app = express();
@@ -513,6 +517,9 @@ export class Relay {
           payload.tabTitle ?? "",
           payload.selectorPath,
         );
+        if (result.ok) {
+          this.extractor?.requestPoll();
+        }
         socket.emit("command:result", result);
       });
 

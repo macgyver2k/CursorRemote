@@ -18,6 +18,7 @@
     pendingApprovals: [],
     inputAvailable: false,
     chatTabs: [],
+    activeComposerId: "",
     mode: { current: "agent", available: [] },
     model: { current: "Auto", currentId: "" },
     windows: [],
@@ -231,9 +232,46 @@
       renderAll();
     });
 
+    function getActiveComposerId(st) {
+      if (st.activeComposerId) return st.activeComposerId;
+      const tab = (st.chatTabs || []).find((t) => t.isActive);
+      return tab?.composerId || "";
+    }
+
+    function getActiveTabTitle(st) {
+      const tab = (st.chatTabs || []).find((t) => t.isActive);
+      return tab?.title || "";
+    }
+
+    function chatContextChanged(prev, next) {
+      const prevComposer = getActiveComposerId(prev);
+      const nextComposer = getActiveComposerId(next);
+      if (prevComposer && nextComposer && prevComposer !== nextComposer) {
+        return true;
+      }
+      const prevTitle = getActiveTabTitle(prev);
+      const nextTitle = getActiveTabTitle(next);
+      return !!(prevTitle && nextTitle && prevTitle !== nextTitle);
+    }
+
+    function resetMessagesView() {
+      state.messages = [];
+      userScrolledUp = false;
+      lastScrollSyncTarget = null;
+      renderMessages();
+    }
+
     socket.on("state:patch", (patch) => {
       const next = { ...patch };
-      if (userScrolledUp && next.messages) {
+      const contextChanged = chatContextChanged(state, { ...state, ...next });
+      if (contextChanged) {
+        userScrolledUp = false;
+        lastScrollSyncTarget = null;
+        if (!Object.prototype.hasOwnProperty.call(next, "messages")) {
+          next.messages = [];
+        }
+      }
+      if (userScrolledUp && next.messages && !contextChanged) {
         next.messages = mergeMessagesPreservingHistory(
           state.messages,
           next.messages,
@@ -2210,6 +2248,7 @@
           btn.className = "tab-item";
           btn.dataset.title = tab.title;
           btn.addEventListener("click", () => {
+            if (!tab.isActive) resetMessagesView();
             socket.emit("command:switch_tab", {
               commandId: newCommandId(),
               tabTitle: tab.title,

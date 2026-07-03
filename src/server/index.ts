@@ -158,6 +158,7 @@ async function main(): Promise<void> {
     commandExecutor,
     cdpBridge,
     windowMonitor,
+    extractor,
   );
   await relay.start();
 
