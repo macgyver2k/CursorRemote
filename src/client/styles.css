@@ -358,7 +358,7 @@ header {
 }
 
 .tool-expand-content {
-  padding: 10px 8px 18px;
+  padding: 10px 8px 8px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -367,7 +367,7 @@ header {
 
 .tool-collapsible-stage {
   position: relative;
-  margin-bottom: 14px;
+  margin-bottom: 0;
   border-radius: 4px;
   overflow: visible;
   background: var(--bg-code);
@@ -557,7 +557,8 @@ header {
   overflow-y: visible;
 }
 
-.tool-collapsible-stage .tool-terminal-output {
+.tool-collapsible-stage .tool-terminal-output,
+.tool-collapsible-stage .code-block-diff-plain {
   background: transparent;
   border-radius: 0;
 }
