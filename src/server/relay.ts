@@ -689,6 +689,23 @@ export class Relay {
         socket.emit("command:result", result);
       });
 
+      socket.on("command:expand_tool", async (payload: CommandPayload) => {
+        if (!payload.commandId || !payload.toolCallId) {
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
+            ok: false,
+            error: "Missing commandId or toolCallId",
+          } satisfies CommandResult);
+          return;
+        }
+        console.log(`[relay] Command: expand_tool from ${socket.id}`);
+        const result = await this.commandExecutor.expandToolDiff(
+          payload.commandId,
+          payload.toolCallId,
+        );
+        socket.emit("command:result", result);
+      });
+
       socket.on(
         "command:scroll_to_message",
         async (payload: CommandPayload) => {

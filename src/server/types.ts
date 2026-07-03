@@ -350,9 +350,11 @@ export interface CommandPayload {
     | "get_plan_full"
     | "get_plan_model_options"
     | "set_plan_model"
-    | "scroll_to_message";
+    | "scroll_to_message"
+    | "expand_tool";
   text?: string;
   messageId?: string;
+  toolCallId?: string;
   scrollRatio?: number;
   flatIndex?: number;
   scrollTo?: "bottom";

@@ -372,6 +372,8 @@ header {
   overflow: visible;
   background: var(--bg-code);
   border: 1px solid rgba(228, 228, 228, 0.12);
+  --cb-font: 12px;
+  --cb-lh: 1.45;
   --tool-diff-expanded-lines: 20;
 }
 

@@ -531,6 +531,49 @@ export class CommandExecutor {
     });
   }
 
+  async expandToolDiff(
+    commandId: string,
+    toolCallId: string,
+  ): Promise<CommandResult> {
+    if (!this.client || !this.client.isConnected()) {
+      return { commandId, ok: false, error: "Not connected to Cursor" };
+    }
+
+    const clicked = (await this.client.evaluate(`
+      (() => {
+        const tcId = ${JSON.stringify(toolCallId)};
+        let wrapper = document.querySelector('[data-tool-call-id="' + tcId + '"]');
+        if (wrapper && !wrapper.hasAttribute('data-flat-index')) {
+          wrapper = wrapper.closest('[data-flat-index]');
+        }
+        if (!wrapper) {
+          for (const el of document.querySelectorAll('[data-flat-index]')) {
+            if (el.querySelector('[data-tool-call-id="' + tcId + '"]')) {
+              wrapper = el;
+              break;
+            }
+          }
+        }
+        if (!wrapper) return false;
+
+        const collapsedBtns = wrapper.querySelectorAll(
+          '.ui-tool-call-card__expand-button--collapsed',
+        );
+        if (collapsedBtns.length === 0) return false;
+        for (const btn of Array.from(collapsedBtns)) {
+          btn.click();
+        }
+        return true;
+      })()
+    `)) as boolean;
+
+    if (clicked) {
+      await sleep(600);
+      console.log(`[command-executor] Expanded tool diff: ${toolCallId}`);
+    }
+    return { commandId, ok: true };
+  }
+
   async extractToolContent(
     toolCallId: string,
   ): Promise<{ code: string; language?: string; filename?: string } | null> {

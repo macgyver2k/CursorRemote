@@ -1362,10 +1362,16 @@
 
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
-        setCollapsibleStageExpanded(
-          stage,
-          !stage.classList.contains("is-expanded"),
-        );
+        const expanding = !stage.classList.contains("is-expanded");
+        setCollapsibleStageExpanded(stage, expanding);
+        if (expanding && stage.querySelector(".tool-diff-host")) {
+          const toolCallId = stage.closest(".el-tool")?.dataset.toolCallId;
+          if (toolCallId) {
+            const commandId = newCommandId();
+            silentCommandIds.add(commandId);
+            socket.emit("command:expand_tool", { commandId, toolCallId });
+          }
+        }
       });
 
       stage.appendChild(btn);
@@ -1708,6 +1714,7 @@
       const el = document.createElement("div");
       el.className = "chat-el el-tool";
       el.dataset.id = msg.id;
+      if (msg.toolCallId) el.dataset.toolCallId = msg.toolCallId;
 
       const expandable = toolHasExpandableContent(msg);
       const compactHeader = expandable && !!(msg.filename || msg.files?.length);
@@ -1746,6 +1753,7 @@
     function updateToolEl(el, msg) {
       const scrollSaved = captureToolNestedScroll(el);
       const stageStates = captureCollapsibleStageStates(el);
+      if (msg.toolCallId) el.dataset.toolCallId = msg.toolCallId;
 
       const expandable = toolHasExpandableContent(msg);
       const compactHeader = expandable && !!(msg.filename || msg.files?.length);

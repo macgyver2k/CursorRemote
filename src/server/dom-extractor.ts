@@ -577,16 +577,56 @@ export function extractionFunction(
       return { blockKind: "code", filename, language, code };
     }
 
+    function diffChangeLineCount(diffBlock: CodeBlockItem | undefined): number {
+      if (!diffBlock?.diffLines?.length) return 0;
+      let n = 0;
+      for (const line of diffBlock.diffLines) {
+        if (line.kind === "add" || line.kind === "rem") n++;
+      }
+      return n;
+    }
+
+    function diffSeemsTruncated(
+      diffBlock: CodeBlockItem | undefined,
+      additions?: number,
+      deletions?: number,
+    ): boolean {
+      if (!diffBlock?.diffLines?.length) return false;
+      const expected = (additions ?? 0) + (deletions ?? 0);
+      if (expected <= 0) return false;
+      return diffChangeLineCount(diffBlock) < expected;
+    }
+
+    function tryExpandCollapsedToolDiff(scope: Element): boolean {
+      const toolRoot = scope.closest("[data-tool-call-id]") || scope;
+      const collapsedBtns = toolRoot.querySelectorAll(
+        ".ui-tool-call-card__expand-button--collapsed",
+      );
+      if (collapsedBtns.length === 0) return false;
+      for (const btn of Array.from(collapsedBtns)) {
+        (btn as HTMLElement).click();
+      }
+      return true;
+    }
+
     function extractDiffBlockFromScope(
       scope: Element,
+      additions?: number,
+      deletions?: number,
     ): CodeBlockItem | undefined {
       const uiDiff = extractUiDefaultDiff(scope);
-      if (uiDiff) return uiDiff;
-      const block = scope.querySelector(
-        ".composer-code-block-container, .composer-message-codeblock",
-      );
-      if (!block) return undefined;
-      return extractCodeBlockItem(block);
+      let result: CodeBlockItem | undefined;
+      if (uiDiff) {
+        result = uiDiff;
+      } else {
+        const block = scope.querySelector(
+          ".composer-code-block-container, .composer-message-codeblock",
+        );
+        if (!block) return undefined;
+        result = extractCodeBlockItem(block);
+      }
+      tryExpandCollapsedToolDiff(scope);
+      return result;
     }
 
     function cleanDiffLineText(s: string): string {
@@ -681,9 +721,11 @@ export function extractionFunction(
           card.querySelector(".ui-edit-tool-call__filename")?.textContent || ""
         ).trim();
         if (!filename) continue;
+        tryExpandCollapsedToolDiff(card);
         const stats = tryParseDiffStatsFromWrapper(card);
         const diffBlock =
-          extractUiDefaultDiff(card) || extractDiffBlockFromScope(card);
+          extractUiDefaultDiff(card) ||
+          extractDiffBlockFromScope(card, stats.additions, stats.deletions);
         files.push({
           filename,
           additions: stats.additions,
@@ -1206,7 +1248,11 @@ export function extractionFunction(
           ? extractToolActions(statusRow)
           : extractToolActions(editReviewEl);
 
-        const diffBlock = extractDiffBlockFromScope(editReviewEl);
+        const diffBlock = extractDiffBlockFromScope(
+          editReviewEl,
+          additions,
+          deletions,
+        );
         return {
           element: {
             type: "tool" as const,
@@ -1327,7 +1373,14 @@ export function extractionFunction(
           ? ""
           : (compactEl.textContent || "").trim();
         const compactDiff = tryParseDiffStatsFromWrapper(toolRoot);
-        const diffBlockCompact = extractDiffBlockFromScope(toolRoot);
+        if ((compactDiff.additions ?? 0) + (compactDiff.deletions ?? 0) > 0) {
+          tryExpandCollapsedToolDiff(toolRoot);
+        }
+        const diffBlockCompact = extractDiffBlockFromScope(
+          toolRoot,
+          compactDiff.additions,
+          compactDiff.deletions,
+        );
         return {
           element: {
             type: "tool" as const,
@@ -1393,7 +1446,11 @@ export function extractionFunction(
         }
       }
 
-      const diffBlockLine = extractDiffBlockFromScope(toolRoot);
+      const diffBlockLine = extractDiffBlockFromScope(
+        toolRoot,
+        additions2,
+        deletions2,
+      );
       const fallbackActions = extractToolActions(toolRoot);
       return {
         element: {
