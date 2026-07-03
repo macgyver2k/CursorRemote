@@ -1,23 +1,24 @@
-import { EventEmitter } from 'events';
-import { CdpClient } from './cdp-client.js';
-import { extractWorkspaceName } from './cdp-bridge.js';
-import type { CDPBridge } from './cdp-bridge.js';
-import type { StateManager } from './state-manager.js';
-import type { DOMExtractor } from './dom-extractor.js';
+import { EventEmitter } from "events";
+import { applyDerivedActivityToState } from "./activity-derive.js";
+import type { CDPBridge } from "./cdp-bridge.js";
+import { extractWorkspaceName } from "./cdp-bridge.js";
+import { CdpClient } from "./cdp-client.js";
+import type { DOMExtractor } from "./dom-extractor.js";
+import { loadExtractionFunctionSource } from "./extraction-fn-source.js";
+import type { StateManager } from "./state-manager.js";
 import type {
-  ChatElement,
-  Approval,
   AgentStatus,
+  Approval,
+  ChatElement,
   ChatTab,
   ComposerQueueState,
-  CursorWindow,
   CursorState,
+  CursorWindow,
   ModeInfo,
   ModelInfo,
-  ServerConfig,
   SelectorConfig,
-} from './types.js';
-import { applyDerivedActivityToState } from './activity-derive.js';
+  ServerConfig,
+} from "./types.js";
 
 export interface WindowSnapshot {
   windowId: string;
@@ -28,7 +29,7 @@ export interface WindowSnapshot {
   agentStatus: AgentStatus;
   agentActivityText: string | null;
   agentActivityLive: boolean;
-  agentActivitySource: CursorState['agentActivitySource'];
+  agentActivitySource: CursorState["agentActivitySource"];
   composerQueue: ComposerQueueState;
   mode: ModeInfo;
   model: ModelInfo;
@@ -43,7 +44,7 @@ export interface WindowSnapshot {
 const CYCLE_INTERVAL_MS = 10000;
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 /**
@@ -52,16 +53,22 @@ function sleep(ms: number): Promise<void> {
  */
 function elementContentKey(el: ChatElement): string {
   switch (el.type) {
-    case 'assistant': return String(el.html?.length ?? el.text?.length ?? 0);
-    case 'human': return String(el.text.length);
-    case 'tool': return `${el.status}:${el.action}:${el.filename ?? ''}`;
-    case 'run_command': return `${el.command.length}:${el.actions.length}`;
-    case 'thought':
-      return `${el.thoughtKind ?? ''}:${el.action ?? ''}:${el.detail ?? ''}:${el.duration ?? ''}`;
-    case 'plan':
-      return `${el.todosCompleted}/${el.todosTotal}:${(el.descriptionHtml || el.description || '').length}:${el.model ?? ''}`;
-    case 'todo_list': return `${el.todosCompleted}/${el.todosTotal}`;
-    case 'loading': return el.text ?? '';
+    case "assistant":
+      return String(el.html?.length ?? el.text?.length ?? 0);
+    case "human":
+      return String(el.text.length);
+    case "tool":
+      return `${el.status}:${el.action}:${el.filename ?? ""}`;
+    case "run_command":
+      return `${el.command.length}:${el.actions.length}`;
+    case "thought":
+      return `${el.thoughtKind ?? ""}:${el.action ?? ""}:${el.detail ?? ""}:${el.duration ?? ""}`;
+    case "plan":
+      return `${el.todosCompleted}/${el.todosTotal}:${(el.descriptionHtml || el.description || "").length}:${el.model ?? ""}`;
+    case "todo_list":
+      return `${el.todosCompleted}/${el.todosTotal}`;
+    case "loading":
+      return el.text ?? "";
   }
 }
 
@@ -71,7 +78,7 @@ function elementContentKey(el: ChatElement): string {
  * (e.g. tool -> run_command at the same data-message-id).
  */
 function messageFingerprint(messages: ChatElement[]): string {
-  if (messages.length === 0) return '';
+  if (messages.length === 0) return "";
   const last = messages[messages.length - 1];
   return `${messages.length}:${last.type}:${last.id}:${elementContentKey(last)}`;
 }
@@ -83,11 +90,16 @@ function messageFingerprint(messages: ChatElement[]): string {
  * changed), so the snapshot wouldn't emit and Telegram wouldn't refresh
  * the banner.
  */
-function approvalsFingerprint(approvals: { id: string; actions: { label: string; type: string }[] }[]): string {
-  if (approvals.length === 0) return '';
+function approvalsFingerprint(
+  approvals: { id: string; actions: { label: string; type: string }[] }[],
+): string {
+  if (approvals.length === 0) return "";
   return approvals
-    .map((a) => `${a.id}|${a.actions.map((act) => `${act.type}:${act.label}`).join(',')}`)
-    .join(';');
+    .map(
+      (a) =>
+        `${a.id}|${a.actions.map((act) => `${act.type}:${act.label}`).join(",")}`,
+    )
+    .join(";");
 }
 
 /**
@@ -96,15 +108,19 @@ function approvalsFingerprint(approvals: { id: string; actions: { label: string;
  * changes at non-tail positions) that the last-element fingerprint misses.
  */
 function elementsSignature(messages: ChatElement[]): string {
-  let sig = '';
+  let sig = "";
   for (const m of messages) {
     sig += m.type[0] + m.id;
-    if (m.type === 'tool') sig += m.status[0];
-    else if (m.type === 'plan') {
-      sig += m.todosCompleted + (m.descriptionHtml?.length ?? 0) + (m.title?.length ?? 0);
-    }     else if (m.type === 'todo_list') sig += m.todosCompleted;
-    else if (m.type === 'thought') sig += (m.duration || '') + (m.thoughtKind || '');
-    else if (m.type === 'loading' && m.text) sig += m.text.length;
+    if (m.type === "tool") sig += m.status[0];
+    else if (m.type === "plan") {
+      sig +=
+        m.todosCompleted +
+        (m.descriptionHtml?.length ?? 0) +
+        (m.title?.length ?? 0);
+    } else if (m.type === "todo_list") sig += m.todosCompleted;
+    else if (m.type === "thought")
+      sig += (m.duration || "") + (m.thoughtKind || "");
+    else if (m.type === "loading" && m.text) sig += m.text.length;
   }
   return sig;
 }
@@ -138,31 +154,35 @@ export class WindowMonitor extends EventEmitter {
     stateManager: StateManager,
     _extractor: DOMExtractor,
     config: ServerConfig,
-    selectors?: SelectorConfig
+    selectors?: SelectorConfig,
   ) {
     super();
     this.cdpBridge = cdpBridge;
     this.stateManager = stateManager;
     this.config = config;
-    this.selectors = selectors ?? {} as SelectorConfig;
+    this.selectors = selectors ?? ({} as SelectorConfig);
 
     this.extractorFactory = () => {
-      const { DOMExtractor: ExtClass } = require('./dom-extractor.js') as { DOMExtractor: typeof DOMExtractor };
+      const { DOMExtractor: ExtClass } = require("./dom-extractor.js") as {
+        DOMExtractor: typeof DOMExtractor;
+      };
       return new ExtClass(this.selectors, () => {});
     };
   }
 
   start(): void {
-    this.stateManager.on('state:patch', this.onPatch);
-    this.cdpBridge.on('connected', this.onConnected);
+    this.stateManager.on("state:patch", this.onPatch);
+    this.cdpBridge.on("connected", this.onConnected);
 
     this.cycleTimer = setInterval(() => this.cycle(), CYCLE_INTERVAL_MS);
-    console.log(`[window-monitor] Started (parallel mode, cycle every ${CYCLE_INTERVAL_MS / 1000}s)`);
+    console.log(
+      `[window-monitor] Started (parallel mode, cycle every ${CYCLE_INTERVAL_MS / 1000}s)`,
+    );
   }
 
   stop(): void {
-    this.stateManager.off('state:patch', this.onPatch);
-    this.cdpBridge.off('connected', this.onConnected);
+    this.stateManager.off("state:patch", this.onPatch);
+    this.cdpBridge.off("connected", this.onConnected);
     if (this.cycleTimer) {
       clearInterval(this.cycleTimer);
       this.cycleTimer = null;
@@ -220,7 +240,7 @@ export class WindowMonitor extends EventEmitter {
     const windowId = this.cdpBridge.activeTargetId;
     if (!windowId) return;
 
-    const win = state.windows.find(w => w.id === windowId);
+    const win = state.windows.find((w) => w.id === windowId);
     if (!win) return;
 
     const snapshot: WindowSnapshot = {
@@ -237,33 +257,39 @@ export class WindowMonitor extends EventEmitter {
       mode: state.mode,
       model: state.model,
       lastUpdated: Date.now(),
-      activeComposerId: state.activeComposerId ?? '',
+      activeComposerId: state.activeComposerId ?? "",
     };
 
     const prev = this.snapshots.get(windowId);
     const queueSig = JSON.stringify(snapshot.composerQueue);
-    const prevQueueSig = prev ? JSON.stringify(prev.composerQueue) : '';
+    const prevQueueSig = prev ? JSON.stringify(prev.composerQueue) : "";
     const approvalSig = approvalsFingerprint(snapshot.pendingApprovals);
-    const prevApprovalSig = prev ? approvalsFingerprint(prev.pendingApprovals) : '';
-    const changed = !prev
-      || prev.messages.length !== snapshot.messages.length
-      || (prev.messages.length > 0 && prev.messages[prev.messages.length - 1]?.id !== snapshot.messages[snapshot.messages.length - 1]?.id)
-      || prev.agentStatus !== snapshot.agentStatus
-      || prev.agentActivityText !== snapshot.agentActivityText
-      || prev.agentActivityLive !== snapshot.agentActivityLive
-      || prev.agentActivitySource !== snapshot.agentActivitySource
-      || approvalSig !== prevApprovalSig
-      || queueSig !== prevQueueSig
-      || prev.mode?.current !== snapshot.mode?.current
-      || prev.model?.current !== snapshot.model?.current
-      || prev.model?.currentId !== snapshot.model?.currentId
-      || messageFingerprint(prev.messages) !== messageFingerprint(snapshot.messages)
-      || elementsSignature(prev.messages) !== elementsSignature(snapshot.messages);
+    const prevApprovalSig = prev
+      ? approvalsFingerprint(prev.pendingApprovals)
+      : "";
+    const changed =
+      !prev ||
+      prev.messages.length !== snapshot.messages.length ||
+      (prev.messages.length > 0 &&
+        prev.messages[prev.messages.length - 1]?.id !==
+          snapshot.messages[snapshot.messages.length - 1]?.id) ||
+      prev.agentStatus !== snapshot.agentStatus ||
+      prev.agentActivityText !== snapshot.agentActivityText ||
+      prev.agentActivityLive !== snapshot.agentActivityLive ||
+      prev.agentActivitySource !== snapshot.agentActivitySource ||
+      approvalSig !== prevApprovalSig ||
+      queueSig !== prevQueueSig ||
+      prev.mode?.current !== snapshot.mode?.current ||
+      prev.model?.current !== snapshot.model?.current ||
+      prev.model?.currentId !== snapshot.model?.currentId ||
+      messageFingerprint(prev.messages) !==
+        messageFingerprint(snapshot.messages) ||
+      elementsSignature(prev.messages) !== elementsSignature(snapshot.messages);
 
     this.snapshots.set(windowId, snapshot);
 
     if (changed) {
-      this.emit('window:update', windowId, snapshot);
+      this.emit("window:update", windowId, snapshot);
     }
   }
 
@@ -287,21 +313,27 @@ export class WindowMonitor extends EventEmitter {
     if (!this._firstCycleLogged) {
       this._firstCycleLogged = true;
       const homeId = this.getHomeWindowId();
-      console.log(`[window-monitor] First cycle — ${windows.length} window(s), home=${homeId?.substring(0, 8) ?? 'none'}:`);
+      console.log(
+        `[window-monitor] First cycle — ${windows.length} window(s), home=${homeId?.substring(0, 8) ?? "none"}:`,
+      );
       for (const w of windows) {
         const isHome = w.id === homeId;
-        console.log(`  [${w.id.substring(0, 8)}] "${w.title}" ws=${w.wsUrl ? 'yes' : 'NO'}${isHome ? ' (home)' : ''}`);
+        console.log(
+          `  [${w.id.substring(0, 8)}] "${w.title}" ws=${w.wsUrl ? "yes" : "NO"}${isHome ? " (home)" : ""}`,
+        );
       }
     }
 
     if (windows.length <= 1) return;
 
     const homeId = this.getHomeWindowId();
-    const otherWindows = windows.filter(w => w.id !== homeId && w.wsUrl);
+    const otherWindows = windows.filter((w) => w.id !== homeId && w.wsUrl);
     if (otherWindows.length === 0) {
-      const noWs = windows.filter(w => w.id !== homeId && !w.wsUrl);
+      const noWs = windows.filter((w) => w.id !== homeId && !w.wsUrl);
       if (noWs.length > 0) {
-        console.warn(`[window-monitor] ${noWs.length} non-home window(s) have no wsUrl (already debugged?): ${noWs.map(w => w.title).join(', ')}`);
+        console.warn(
+          `[window-monitor] ${noWs.length} non-home window(s) have no wsUrl (already debugged?): ${noWs.map((w) => w.title).join(", ")}`,
+        );
       }
       return;
     }
@@ -329,7 +361,10 @@ export class WindowMonitor extends EventEmitter {
     try {
       await client.connect(win.wsUrl);
 
-      const workspaceName = await extractWorkspaceName(client, this.config.windowTitleQualifier);
+      const workspaceName = await extractWorkspaceName(
+        client,
+        this.config.windowTitleQualifier,
+      );
       const windowTitle = workspaceName ?? win.title;
       if (workspaceName && workspaceName !== win.title) {
         win.title = workspaceName;
@@ -337,7 +372,9 @@ export class WindowMonitor extends EventEmitter {
 
       const state = await this.extractFromClient(client, windowTitle);
       if (!state) {
-        console.warn(`[window-monitor] Poll "${windowTitle}": extraction returned null`);
+        console.warn(
+          `[window-monitor] Poll "${windowTitle}": extraction returned null`,
+        );
       }
       if (state) {
         const snapshot: WindowSnapshot = {
@@ -354,38 +391,43 @@ export class WindowMonitor extends EventEmitter {
           mode: state.mode,
           model: state.model,
           lastUpdated: Date.now(),
-          activeComposerId: state.activeComposerId ?? '',
+          activeComposerId: state.activeComposerId ?? "",
         };
 
         const prev = this.snapshots.get(win.id);
         const qSig = JSON.stringify(snapshot.composerQueue);
-        const pqSig = prev ? JSON.stringify(prev.composerQueue) : '';
+        const pqSig = prev ? JSON.stringify(prev.composerQueue) : "";
         const aSig = approvalsFingerprint(snapshot.pendingApprovals);
-        const paSig = prev ? approvalsFingerprint(prev.pendingApprovals) : '';
-        const changed = !prev
-          || prev.messages.length !== snapshot.messages.length
-          || (prev.messages.length > 0 && prev.messages[prev.messages.length - 1]?.id !== snapshot.messages[snapshot.messages.length - 1]?.id)
-          || prev.agentStatus !== snapshot.agentStatus
-          || prev.agentActivityText !== snapshot.agentActivityText
-          || prev.agentActivityLive !== snapshot.agentActivityLive
-          || prev.agentActivitySource !== snapshot.agentActivitySource
-          || aSig !== paSig
-          || qSig !== pqSig
-          || prev.mode?.current !== snapshot.mode?.current
-          || prev.model?.current !== snapshot.model?.current
-          || prev.model?.currentId !== snapshot.model?.currentId
-          || messageFingerprint(prev.messages) !== messageFingerprint(snapshot.messages)
-          || elementsSignature(prev.messages) !== elementsSignature(snapshot.messages);
+        const paSig = prev ? approvalsFingerprint(prev.pendingApprovals) : "";
+        const changed =
+          !prev ||
+          prev.messages.length !== snapshot.messages.length ||
+          (prev.messages.length > 0 &&
+            prev.messages[prev.messages.length - 1]?.id !==
+              snapshot.messages[snapshot.messages.length - 1]?.id) ||
+          prev.agentStatus !== snapshot.agentStatus ||
+          prev.agentActivityText !== snapshot.agentActivityText ||
+          prev.agentActivityLive !== snapshot.agentActivityLive ||
+          prev.agentActivitySource !== snapshot.agentActivitySource ||
+          aSig !== paSig ||
+          qSig !== pqSig ||
+          prev.mode?.current !== snapshot.mode?.current ||
+          prev.model?.current !== snapshot.model?.current ||
+          prev.model?.currentId !== snapshot.model?.currentId ||
+          messageFingerprint(prev.messages) !==
+            messageFingerprint(snapshot.messages) ||
+          elementsSignature(prev.messages) !==
+            elementsSignature(snapshot.messages);
 
         this.snapshots.set(win.id, snapshot);
 
         if (changed) {
-          this.emit('window:update', win.id, snapshot);
+          this.emit("window:update", win.id, snapshot);
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      if (!msg.includes('WebSocket') && !msg.includes('closed')) {
+      if (!msg.includes("WebSocket") && !msg.includes("closed")) {
         console.warn(`[window-monitor] Poll "${win.title}" failed: ${msg}`);
       }
     } finally {
@@ -393,12 +435,13 @@ export class WindowMonitor extends EventEmitter {
     }
   }
 
-  private async extractFromClient(client: CdpClient, windowTitle: string): Promise<CursorState | null> {
+  private async extractFromClient(
+    client: CdpClient,
+    windowTitle: string,
+  ): Promise<CursorState | null> {
     try {
-      const { extractionFunction } = await import('./dom-extractor.js');
-
-      const result = await client.callFunctionWithTimeout(
-        extractionFunction as (...args: never[]) => unknown,
+      const result = await client.callFunctionFromSource(
+        loadExtractionFunctionSource(),
         [
           this.selectors.chatContainer?.strategies ?? [],
           this.selectors.approveButton?.strategies ?? [],
@@ -412,7 +455,7 @@ export class WindowMonitor extends EventEmitter {
           this.selectors.modelDropdown?.strategies ?? [],
           windowTitle,
         ],
-        5000
+        5000,
       );
 
       const state = result as CursorState | null;

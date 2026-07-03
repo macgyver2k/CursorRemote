@@ -1,27 +1,28 @@
-import { EventEmitter } from 'events';
-import type { CursorState, CursorWindow } from './types.js';
-import { AGENT_ACTIVITY_STALE_MS } from './activity-stale.js';
+import { EventEmitter } from "events";
+import { AGENT_ACTIVITY_STALE_MS } from "./activity-stale.js";
+import type { CursorState, CursorWindow } from "./types.js";
+import type { WindowSnapshot } from "./window-monitor.js";
 
 function emptyState(): CursorState {
   return {
     connected: false,
-    extractorStatus: 'idle',
+    extractorStatus: "idle",
     lastExtractionAt: null,
     consecutiveExtractionFailures: 0,
     lastExtractionError: null,
-    agentStatus: 'idle',
+    agentStatus: "idle",
     agentActivityText: null,
     agentActivityLive: false,
-    agentActivitySource: 'none',
+    agentActivitySource: "none",
     messages: [],
     pendingApprovals: [],
     inputAvailable: false,
     chatTabs: [],
-    activeComposerId: '',
-    mode: { current: 'agent', available: [] },
-    model: { current: 'Auto', currentId: '' },
+    activeComposerId: "",
+    mode: { current: "agent", available: [] },
+    model: { current: "Auto", currentId: "" },
     windows: [],
-    activeWindowId: '',
+    activeWindowId: "",
     composerQueue: { items: [] },
     questionnaire: null,
   };
@@ -64,7 +65,7 @@ export class StateManager extends EventEmitter {
    */
   onExtraction(newState: CursorState | null): void {
     if (newState === null) {
-      this.onExtractionFailure('Extraction returned null');
+      this.onExtractionFailure("Extraction returned null");
       return;
     }
 
@@ -73,7 +74,7 @@ export class StateManager extends EventEmitter {
     // Preserve bridge-managed fields that the DOM extractor should not own.
     const now = Date.now();
     newState.connected = this.currentState.connected;
-    newState.extractorStatus = this.currentState.connected ? 'ok' : 'idle';
+    newState.extractorStatus = this.currentState.connected ? "ok" : "idle";
     newState.lastExtractionAt = now;
     newState.consecutiveExtractionFailures = 0;
     newState.lastExtractionError = null;
@@ -94,7 +95,7 @@ export class StateManager extends EventEmitter {
     if (this.consecutiveNulls === this.nullWarningThreshold) {
       console.warn(
         `[state-manager] ${this.nullWarningThreshold} consecutive failed extractions. ` +
-        'Selectors may need updating or the Cursor window may be background-throttled.'
+          "Selectors may need updating or the Cursor window may be background-throttled.",
       );
     }
 
@@ -102,8 +103,13 @@ export class StateManager extends EventEmitter {
     const nextState: CursorState = {
       ...this.currentState,
       extractorStatus:
-        connected && this.currentState.lastExtractionAt != null ? 'stale' : connected ? 'waiting' : 'idle',
-      consecutiveExtractionFailures: this.currentState.consecutiveExtractionFailures + 1,
+        connected && this.currentState.lastExtractionAt != null
+          ? "stale"
+          : connected
+            ? "waiting"
+            : "idle",
+      consecutiveExtractionFailures:
+        this.currentState.consecutiveExtractionFailures + 1,
       lastExtractionError: message,
     };
 
@@ -127,14 +133,17 @@ export class StateManager extends EventEmitter {
       this.activityStableSince = null;
       this.activityStableText = undefined;
       this.activitySuppressedMatch = undefined;
-      if (newState.agentActivityText === null || newState.agentActivityText === '') {
+      if (
+        newState.agentActivityText === null ||
+        newState.agentActivityText === ""
+      ) {
         return newState;
       }
       return {
         ...newState,
         agentActivityText: null,
         agentActivityLive: false,
-        agentActivitySource: 'none',
+        agentActivitySource: "none",
       };
     }
 
@@ -145,16 +154,20 @@ export class StateManager extends EventEmitter {
       return {
         ...newState,
         agentStatus:
-          newState.agentStatus === 'waiting_approval' || newState.agentStatus === 'error'
+          newState.agentStatus === "waiting_approval" ||
+          newState.agentStatus === "error"
             ? newState.agentStatus
-            : 'idle',
+            : "idle",
         agentActivityText: null,
         agentActivityLive: false,
-        agentActivitySource: 'none',
+        agentActivitySource: "none",
       };
     }
 
-    if (this.activitySuppressedMatch != null && text !== this.activitySuppressedMatch) {
+    if (
+      this.activitySuppressedMatch != null &&
+      text !== this.activitySuppressedMatch
+    ) {
       this.activitySuppressedMatch = undefined;
     }
 
@@ -167,12 +180,13 @@ export class StateManager extends EventEmitter {
         return {
           ...newState,
           agentStatus:
-            newState.agentStatus === 'waiting_approval' || newState.agentStatus === 'error'
+            newState.agentStatus === "waiting_approval" ||
+            newState.agentStatus === "error"
               ? newState.agentStatus
-              : 'idle',
+              : "idle",
           agentActivityText: null,
           agentActivityLive: false,
-          agentActivitySource: 'none',
+          agentActivitySource: "none",
         };
       }
       return newState;
@@ -187,7 +201,7 @@ export class StateManager extends EventEmitter {
     const nextState: CursorState = {
       ...this.currentState,
       connected,
-      extractorStatus: connected ? 'waiting' : 'idle',
+      extractorStatus: connected ? "waiting" : "idle",
       lastExtractionAt: null,
       consecutiveExtractionFailures: 0,
       lastExtractionError: null,
@@ -195,8 +209,8 @@ export class StateManager extends EventEmitter {
     const patch = this.diff(this.currentState, nextState);
     if (!patch) return;
     this.currentState = nextState;
-    this.emit('state:patch', patch);
-    this.emit('connection:changed', connected);
+    this.emit("state:patch", patch);
+    this.emit("connection:changed", connected);
   }
 
   updateWindows(windows: CursorWindow[], activeWindowId: string): void {
@@ -205,25 +219,58 @@ export class StateManager extends EventEmitter {
       JSON.stringify(this.currentState.windows) !== JSON.stringify(windows);
     if (!changed) return;
     this.currentState = { ...this.currentState, windows, activeWindowId };
-    this.emit('state:patch', { windows, activeWindowId });
+    this.emit("state:patch", { windows, activeWindowId });
   }
 
-  /** Push per-window mode/model into global state (e.g. from a cached snapshot on window switch). */
-  updateModeModel(mode: CursorState['mode'], model: CursorState['model']): void {
+  updateModeModel(
+    mode: CursorState["mode"],
+    model: CursorState["model"],
+  ): void {
     const modeChanged = this.currentState.mode?.current !== mode?.current;
-    const modelChanged = this.currentState.model?.current !== model?.current
-      || this.currentState.model?.currentId !== model?.currentId;
+    const modelChanged =
+      this.currentState.model?.current !== model?.current ||
+      this.currentState.model?.currentId !== model?.currentId;
     if (!modeChanged && !modelChanged) return;
     const patch: Partial<CursorState> = {};
     if (modeChanged) patch.mode = mode;
     if (modelChanged) patch.model = model;
     this.currentState = { ...this.currentState, ...patch };
-    this.emit('state:patch', patch);
+    this.emit("state:patch", patch);
+  }
+
+  applyWindowSnapshot(snapshot: WindowSnapshot): void {
+    const next: CursorState = {
+      ...this.currentState,
+      activeWindowId: snapshot.windowId,
+      messages: snapshot.messages,
+      chatTabs: snapshot.chatTabs,
+      pendingApprovals: snapshot.pendingApprovals,
+      agentStatus: snapshot.agentStatus,
+      agentActivityText: snapshot.agentActivityText,
+      agentActivityLive: snapshot.agentActivityLive,
+      agentActivitySource: snapshot.agentActivitySource,
+      composerQueue: snapshot.composerQueue,
+      mode: snapshot.mode,
+      model: snapshot.model,
+      activeComposerId: snapshot.activeComposerId,
+      connected: true,
+      extractorStatus: "ok",
+      lastExtractionAt: snapshot.lastUpdated,
+      consecutiveExtractionFailures: 0,
+      lastExtractionError: null,
+    };
+
+    const patch = this.diff(this.currentState, next);
+    if (!patch) return;
+
+    this.currentState = next;
+    this._generation++;
+    this.emit("state:patch", patch);
   }
 
   private diff(
     prev: CursorState,
-    next: CursorState
+    next: CursorState,
   ): Partial<CursorState> | null {
     const patch: Partial<CursorState> = {};
     let hasChange = false;
@@ -243,7 +290,9 @@ export class StateManager extends EventEmitter {
       hasChange = true;
     }
 
-    if (prev.consecutiveExtractionFailures !== next.consecutiveExtractionFailures) {
+    if (
+      prev.consecutiveExtractionFailures !== next.consecutiveExtractionFailures
+    ) {
       patch.consecutiveExtractionFailures = next.consecutiveExtractionFailures;
       hasChange = true;
     }
@@ -283,7 +332,10 @@ export class StateManager extends EventEmitter {
       hasChange = true;
     }
 
-    if (JSON.stringify(prev.pendingApprovals) !== JSON.stringify(next.pendingApprovals)) {
+    if (
+      JSON.stringify(prev.pendingApprovals) !==
+      JSON.stringify(next.pendingApprovals)
+    ) {
       patch.pendingApprovals = next.pendingApprovals;
       hasChange = true;
     }
@@ -298,7 +350,10 @@ export class StateManager extends EventEmitter {
       hasChange = true;
     }
 
-    if (prev.model?.current !== next.model?.current || prev.model?.currentId !== next.model?.currentId) {
+    if (
+      prev.model?.current !== next.model?.current ||
+      prev.model?.currentId !== next.model?.currentId
+    ) {
       patch.model = next.model;
       hasChange = true;
     }
@@ -313,12 +368,16 @@ export class StateManager extends EventEmitter {
       hasChange = true;
     }
 
-    if (JSON.stringify(prev.composerQueue) !== JSON.stringify(next.composerQueue)) {
+    if (
+      JSON.stringify(prev.composerQueue) !== JSON.stringify(next.composerQueue)
+    ) {
       patch.composerQueue = next.composerQueue;
       hasChange = true;
     }
 
-    if (JSON.stringify(prev.questionnaire) !== JSON.stringify(next.questionnaire)) {
+    if (
+      JSON.stringify(prev.questionnaire) !== JSON.stringify(next.questionnaire)
+    ) {
       patch.questionnaire = next.questionnaire;
       hasChange = true;
     }
@@ -335,7 +394,7 @@ export class StateManager extends EventEmitter {
       this.debounceTimer = setTimeout(() => {
         this.debounceTimer = null;
         if (this.pendingPatch) {
-          this.emit('state:patch', this.pendingPatch);
+          this.emit("state:patch", this.pendingPatch);
           this.pendingPatch = null;
         }
       }, this.debounceMs);

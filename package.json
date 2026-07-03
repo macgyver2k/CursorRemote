@@ -203,10 +203,11 @@
     ]
   },
   "scripts": {
-    "dev": "mkdir -p temp data && tsx watch --exclude ./data/** --exclude ./temp/** src/server/index.ts",
+    "dev": "tsx scripts/build-extraction-fn.mjs && mkdir -p temp data && tsx watch --exclude ./data/** --exclude ./temp/** src/server/index.ts",
     "setup": "bash scripts/setup.sh",
     "build": "tsc && rm -rf dist/client && cp -r src/client dist/client && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map",
-    "build:ext": "node extension/esbuild.js --production",
+    "build:server": "tsx scripts/build-extraction-fn.mjs && node extension/esbuild.js --production --server-only && node scripts/build-client.mjs",
+    "build:ext": "tsx scripts/build-extraction-fn.mjs && node extension/esbuild.js --production",
     "watch:ext": "node extension/esbuild.js --watch",
     "package": "tsx scripts/bump-build.ts && mkdir -p releases && npx @vscode/vsce package --no-dependencies --out releases/ && tsx scripts/verify-vsix.ts",
     "vscode:prepublish": "npm run build && npm run build:ext",
@@ -240,5 +241,6 @@
     "jsdom": "^29.0.1",
     "tsx": "^4.19.0",
     "typescript": "^5.7.0"
-  }
+  },
+  "packageManager": "pnpm@8.15.9+sha512.499434c9d8fdd1a2794ebf4552b3b25c0a633abcee5bb15e7b5de90f32f47b513aca98cd5cfd001c31f0db454bc3804edccd578501e4ca293a6816166bbd9f81"
 }

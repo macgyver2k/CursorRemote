@@ -1,9 +1,42 @@
-import type { CdpClient } from './cdp-client.js';
-import type { SelectorConfig, CommandResult, PlanModelOption } from './types.js';
+import type { CdpClient } from "./cdp-client.js";
+import type {
+  CommandResult,
+  PlanModelOption,
+  SelectorConfig,
+} from "./types.js";
 
 const MAX_RETRIES = 2;
 const RETRY_DELAY_MS = 500;
 const FOCUS_DELAY_MS = 100;
+
+const COMPOSER_SCROLL_JS = `
+  function findComposerMessagesViewport() {
+    const prefer = [
+      '.virtualized-composer-messages-scroll-container',
+      '.composer-messages-container .ui-scroll-area__viewport',
+      '.composer-messages-container [class*="scroll"]',
+      '.composer-messages-container',
+      'div.composer-bar.editor .ui-scroll-area__viewport',
+      'div.composer-bar.editor [class*="scroll"]',
+      'div.composer-bar.editor',
+    ];
+    for (const sel of prefer) {
+      try {
+        const el = document.querySelector(sel);
+        if (el && el.scrollHeight > el.clientHeight + 4) return el;
+      } catch {}
+    }
+    return null;
+  }
+
+  function findMessageRow(messageId) {
+    const el = document.querySelector('[data-message-id="' + messageId + '"]');
+    if (!el) return null;
+    return el.closest('.virtualized-composer-messages-row')
+      || el.closest('[data-flat-index]')
+      || el;
+  }
+`;
 
 // Resolves the currently-open model picker menu element across Cursor versions.
 // Older builds expose `[data-testid="model-picker-menu"]`; newer builds (~3.5.17)
@@ -188,7 +221,7 @@ export class CommandExecutor {
       const strategies = this.selectors.chatInput.strategies;
 
       // Step 1: Find and focus the input element (evaluate only for DOM query + focus)
-      const result = await client.evaluate(`
+      const result = (await client.evaluate(`
         (() => {
           const strategies = ${JSON.stringify(strategies)};
           let input = null;
@@ -207,35 +240,39 @@ export class CommandExecutor {
           input.click();
           return { ok: true, info };
         })()
-      `) as { ok: boolean; error?: string; info?: string } | null;
+      `)) as { ok: boolean; error?: string; info?: string } | null;
 
       if (!result?.ok) {
-        throw new Error(result?.error ?? 'Failed to focus input');
+        throw new Error(result?.error ?? "Failed to focus input");
       }
 
       console.log(`[command-executor] Focused: ${result.info}`);
       await sleep(FOCUS_DELAY_MS);
 
       // Step 2: Clear any existing text via Ctrl+A then Delete (CDP Input domain)
-      await client.pressKey('a', 'KeyA', 65, 2); // 2 = Ctrl modifier
+      await client.pressKey("a", "KeyA", 65, 2); // 2 = Ctrl modifier
       await sleep(50);
-      await client.pressKey('Backspace', 'Backspace', 8);
+      await client.pressKey("Backspace", "Backspace", 8);
       await sleep(50);
 
       // Step 3: Insert text via CDP Input.insertText (native Chromium input pipeline)
       await client.typeText(text);
-      console.log(`[command-executor] Text inserted via Input.insertText (${text.length} chars)`);
+      console.log(
+        `[command-executor] Text inserted via Input.insertText (${text.length} chars)`,
+      );
       await sleep(150);
 
       // Step 4: Submit with Enter via CDP Input.dispatchKeyEvent
-      await client.pressKey('Enter', 'Enter', 13);
-      console.log(`[command-executor] Enter pressed via CDP Input.dispatchKeyEvent`);
+      await client.pressKey("Enter", "Enter", 13);
+      console.log(
+        `[command-executor] Enter pressed via CDP Input.dispatchKeyEvent`,
+      );
     });
   }
 
   async clickApproval(
     commandId: string,
-    selectorPath: string
+    selectorPath: string,
   ): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
       await client.click(selectorPath);
@@ -254,29 +291,24 @@ export class CommandExecutor {
 
   async reject(
     commandId: string,
-    selectorPath: string
+    selectorPath: string,
   ): Promise<CommandResult> {
     return this.clickApproval(commandId, selectorPath);
   }
 
-  async scrollChatUp(commandId: string, times: number = 5): Promise<CommandResult> {
+  async scrollChatUp(
+    commandId: string,
+    times: number = 5,
+  ): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
-      const containerSelectors = this.selectors.chatContainer.strategies;
       for (let i = 0; i < times; i++) {
         await client.evaluate(`
           (() => {
-            const strategies = ${JSON.stringify(containerSelectors)};
-            for (const sel of strategies) {
-              try {
-                const el = document.querySelector(sel);
-                if (el) {
-                  const scrollable = el.querySelector('[class*="scroll"]') || el;
-                  scrollable.scrollTop = 0;
-                  return true;
-                }
-              } catch {}
-            }
-            return false;
+            ${COMPOSER_SCROLL_JS}
+            const vp = findComposerMessagesViewport();
+            if (!vp) return false;
+            vp.scrollTop = 0;
+            return true;
           })()
         `);
         await sleep(500);
@@ -287,34 +319,77 @@ export class CommandExecutor {
 
   async scrollChatToBottom(commandId: string): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
-      const containerSelectors = this.selectors.chatContainer.strategies;
       await client.evaluate(`
         (() => {
-          const strategies = ${JSON.stringify(containerSelectors)};
-          for (const sel of strategies) {
-            try {
-              const el = document.querySelector(sel);
-              if (el) {
-                const scrollable = el.querySelector('[class*="scroll"]') || el;
-                scrollable.scrollTop = scrollable.scrollHeight;
-                return true;
-              }
-            } catch {}
-          }
-          return false;
+          ${COMPOSER_SCROLL_JS}
+          const vp = findComposerMessagesViewport();
+          if (!vp) return false;
+          vp.scrollTop = vp.scrollHeight;
+          return true;
         })()
       `);
-      console.log('[command-executor] Scrolled chat to bottom');
+      console.log("[command-executor] Scrolled chat to bottom");
+    });
+  }
+
+  async scrollChatToMessage(
+    commandId: string,
+    messageId: string,
+    scrollRatio: number,
+  ): Promise<CommandResult> {
+    const ratio = Math.max(0, Math.min(1, scrollRatio));
+    return this.withRetry(commandId, async (client) => {
+      for (let attempt = 0; attempt < 35; attempt++) {
+        const found = (await client.evaluate(`
+          (() => {
+            ${COMPOSER_SCROLL_JS}
+            const messageId = ${JSON.stringify(messageId)};
+            const ratio = ${ratio};
+            const attempt = ${attempt};
+            const vp = findComposerMessagesViewport();
+            if (!vp) return false;
+
+            if (attempt === 0) {
+              const max = Math.max(0, vp.scrollHeight - vp.clientHeight);
+              vp.scrollTop = ratio * max;
+            }
+
+            const row = findMessageRow(messageId);
+            if (row) {
+              row.scrollIntoView({ block: 'start', behavior: 'instant' });
+              return true;
+            }
+
+            if (ratio < 0.45) {
+              vp.scrollTop = Math.max(0, vp.scrollTop - vp.clientHeight * 0.85);
+            } else {
+              vp.scrollTop = Math.min(
+                vp.scrollHeight,
+                vp.scrollTop + vp.clientHeight * 0.85,
+              );
+            }
+            return false;
+          })()
+        `)) as boolean;
+        if (found) {
+          console.log(
+            `[command-executor] Scrolled chat to message ${messageId}`,
+          );
+          return;
+        }
+        await sleep(300);
+      }
+      throw new Error(`Message ${messageId} not found`);
     });
   }
 
   async switchTab(
     commandId: string,
     tabTitle: string,
-    _selectorPath?: string
+    _selectorPath?: string,
   ): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
-      const clicked = await client.evaluate(`
+      const clicked = (await client.evaluate(`
         (() => {
           const title = ${JSON.stringify(tabTitle)};
           const norm = s => s.trim().replace(/\\s+/g, ' ').toLowerCase();
@@ -379,8 +454,8 @@ export class CommandExecutor {
           }
           return false;
         })()
-      `) as boolean;
-      if (!clicked) throw new Error('Tab not found: ' + tabTitle);
+      `)) as boolean;
+      if (!clicked) throw new Error("Tab not found: " + tabTitle);
       console.log(`[command-executor] Switched tab: ${tabTitle}`);
     });
   }
@@ -388,7 +463,7 @@ export class CommandExecutor {
   async newChat(commandId: string): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
       const strategies = this.selectors.newChatButton?.strategies ?? [];
-      const result = await client.evaluate(`
+      const result = (await client.evaluate(`
         (() => {
           const strategies = ${JSON.stringify(strategies)};
           for (const sel of strategies) {
@@ -399,8 +474,8 @@ export class CommandExecutor {
           }
           return false;
         })()
-      `) as boolean;
-      if (!result) throw new Error('New Chat button not found');
+      `)) as boolean;
+      if (!result) throw new Error("New Chat button not found");
       console.log(`[command-executor] New chat created`);
     });
   }
@@ -410,7 +485,7 @@ export class CommandExecutor {
       const strategies = this.selectors.modeDropdown?.strategies ?? [];
 
       // Click the dropdown trigger to open the menu
-      const opened = await client.evaluate(`
+      const opened = (await client.evaluate(`
         (() => {
           const strategies = ${JSON.stringify(strategies)};
           for (const sel of strategies) {
@@ -421,13 +496,13 @@ export class CommandExecutor {
           }
           return false;
         })()
-      `) as boolean;
-      if (!opened) throw new Error('Mode dropdown not found');
+      `)) as boolean;
+      if (!opened) throw new Error("Mode dropdown not found");
 
       await sleep(250);
 
       // Click the mode item whose ID ends with the modeId
-      const selected = await client.evaluate(`
+      const selected = (await client.evaluate(`
         (() => {
           const modeId = ${JSON.stringify(modeId)};
           const items = document.querySelectorAll('[id*="composer-mode-"][id$="-' + modeId + '"]');
@@ -438,23 +513,30 @@ export class CommandExecutor {
           }
           return false;
         })()
-      `) as boolean;
+      `)) as boolean;
       if (!selected) throw new Error(`Mode "${modeId}" not found in dropdown`);
       console.log(`[command-executor] Mode set to: ${modeId}`);
     });
   }
 
-  async clickAction(commandId: string, selectorPath: string): Promise<CommandResult> {
+  async clickAction(
+    commandId: string,
+    selectorPath: string,
+  ): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
       await client.click(selectorPath);
-      console.log(`[command-executor] Clicked action: ${selectorPath.substring(0, 60)}`);
+      console.log(
+        `[command-executor] Clicked action: ${selectorPath.substring(0, 60)}`,
+      );
     });
   }
 
-  async extractToolContent(toolCallId: string): Promise<{ code: string; language?: string; filename?: string } | null> {
+  async extractToolContent(
+    toolCallId: string,
+  ): Promise<{ code: string; language?: string; filename?: string } | null> {
     if (!this.client || !this.client.isConnected()) return null;
 
-    const result = await this.client.evaluate(`
+    const result = (await this.client.evaluate(`
       (() => {
         const tcId = ${JSON.stringify(toolCallId)};
         const wrapper = document.querySelector('[data-tool-call-id="' + tcId + '"]')
@@ -514,11 +596,14 @@ export class CommandExecutor {
         }
         return extract();
       })()
-    `) as { code: string; language?: string; filename?: string } | '__NEED_WAIT__' | null;
+    `)) as
+      | { code: string; language?: string; filename?: string }
+      | "__NEED_WAIT__"
+      | null;
 
-    if (result === '__NEED_WAIT__') {
+    if (result === "__NEED_WAIT__") {
       await sleep(600);
-      const expanded = await this.client.evaluate(`
+      const expanded = (await this.client.evaluate(`
         (() => {
           const tcId = ${JSON.stringify(toolCallId)};
           const wrapper = document.querySelector('[data-tool-call-id="' + tcId + '"]')
@@ -557,7 +642,7 @@ export class CommandExecutor {
           if (text.length > 0) return { code: text, language: undefined, filename: undefined };
           return null;
         })()
-      `) as { code: string; language?: string; filename?: string } | null;
+      `)) as { code: string; language?: string; filename?: string } | null;
 
       // Collapse back
       await this.client.evaluate(`
@@ -591,7 +676,7 @@ export class CommandExecutor {
       // Skip any trigger whose id starts with `plan-exec-model` (those belong
       // to the plan-execution picker, not the composer's model picker) — same
       // filter as openModelMenuAndReadOptions.
-      const opened = await client.evaluate(`
+      const opened = (await client.evaluate(`
         (() => {
           const strategies = ${JSON.stringify(strategies)};
           for (const sel of strategies) {
@@ -607,48 +692,53 @@ export class CommandExecutor {
           }
           return false;
         })()
-      `) as boolean;
-      if (!opened) throw new Error('Model dropdown trigger not found');
+      `)) as boolean;
+      if (!opened) throw new Error("Model dropdown trigger not found");
 
       await sleep(300);
 
       // Step 2: Verify menu opened
-      const menuVisible = await client.evaluate(`
+      const menuVisible = (await client.evaluate(`
         (() => {
           ${MODEL_MENU_LOOKUP_JS}
           return findModelMenu() !== null;
         })()
-      `) as boolean;
-      if (!menuVisible) throw new Error('Model picker did not open');
+      `)) as boolean;
+      if (!menuVisible) throw new Error("Model picker did not open");
 
       // Step 3: Find and click the model item via the shared helper so
       // setModel, setPlanModel, web client, and Telegram all resolve the
       // same way.
-      const selected = await client.evaluate(`
+      const selected = (await client.evaluate(`
         (() => {
           ${MODEL_MENU_LOOKUP_JS}
           ${MODEL_ITEM_HELPERS_JS}
           return pickModelById(findModelMenu(), ${JSON.stringify(modelId)});
         })()
-      `) as boolean;
-      if (!selected) throw new Error(`Model "${modelId}" not found in dropdown`);
+      `)) as boolean;
+      if (!selected)
+        throw new Error(`Model "${modelId}" not found in dropdown`);
 
       await sleep(200);
 
       // Step 4: Verify dropdown closed (confirms selection was accepted)
-      const menuStillOpen = await client.evaluate(`
+      const menuStillOpen = (await client.evaluate(`
         (() => {
           ${MODEL_MENU_LOOKUP_JS}
           return findModelMenu() !== null;
         })()
-      `) as boolean;
+      `)) as boolean;
       if (menuStillOpen) {
-        console.warn(`[command-executor] Model dropdown still open — pressing Escape`);
-        await client.pressKey('Escape', 'Escape', 27);
+        console.warn(
+          `[command-executor] Model dropdown still open — pressing Escape`,
+        );
+        await client.pressKey("Escape", "Escape", 27);
         await sleep(100);
       }
 
-      console.log(`[command-executor] Model set to: ${modelId} (menu closed: ${!menuStillOpen})`);
+      console.log(
+        `[command-executor] Model set to: ${modelId} (menu closed: ${!menuStillOpen})`,
+      );
     });
   }
 
@@ -660,7 +750,10 @@ export class CommandExecutor {
     return { commandId, ok: true, data: result.data };
   }
 
-  async getPlanModelOptions(commandId: string, selectorPath: string): Promise<CommandResult> {
+  async getPlanModelOptions(
+    commandId: string,
+    selectorPath: string,
+  ): Promise<CommandResult> {
     const result = await this.withRetryValue(commandId, async (client) => {
       return await this.openPlanModelMenuAndReadOptions(client, selectorPath);
     });
@@ -668,27 +761,31 @@ export class CommandExecutor {
     return { commandId, ok: true, data: result.data };
   }
 
-  async setPlanModel(commandId: string, selectorPath: string, planModelId: string): Promise<CommandResult> {
+  async setPlanModel(
+    commandId: string,
+    selectorPath: string,
+    planModelId: string,
+  ): Promise<CommandResult> {
     return this.withRetry(commandId, async (client) => {
       await this.openPlanModelMenu(client, selectorPath);
-      const selected = await client.evaluate(`
+      const selected = (await client.evaluate(`
         (() => {
           ${MODEL_MENU_LOOKUP_JS}
           ${MODEL_ITEM_HELPERS_JS}
           return pickModelById(findModelMenu(), ${JSON.stringify(planModelId)});
         })()
-      `) as boolean;
+      `)) as boolean;
       if (!selected) throw new Error(`Plan model "${planModelId}" not found`);
 
       await sleep(200);
-      const menuStillOpen = await client.evaluate(`
+      const menuStillOpen = (await client.evaluate(`
         (() => {
           ${MODEL_MENU_LOOKUP_JS}
           return findModelMenu() !== null;
         })()
-      `) as boolean;
+      `)) as boolean;
       if (menuStillOpen) {
-        await client.pressKey('Escape', 'Escape', 27);
+        await client.pressKey("Escape", "Escape", 27);
         await sleep(100);
       }
       console.log(`[command-executor] Plan model set to: ${planModelId}`);
@@ -697,10 +794,10 @@ export class CommandExecutor {
 
   private async withRetry(
     commandId: string,
-    action: (client: CdpClient) => Promise<void>
+    action: (client: CdpClient) => Promise<void>,
   ): Promise<CommandResult> {
     if (!this.client || !this.client.isConnected()) {
-      return { commandId, ok: false, error: 'Not connected to Cursor' };
+      return { commandId, ok: false, error: "Not connected to Cursor" };
     }
 
     let lastError: string | undefined;
@@ -711,7 +808,7 @@ export class CommandExecutor {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         console.warn(
-          `[command-executor] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastError}`
+          `[command-executor] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastError}`,
         );
         if (attempt < MAX_RETRIES) {
           await sleep(RETRY_DELAY_MS);
@@ -724,10 +821,10 @@ export class CommandExecutor {
 
   private async withRetryValue<T>(
     commandId: string,
-    action: (client: CdpClient) => Promise<T>
+    action: (client: CdpClient) => Promise<T>,
   ): Promise<CommandResult & { data?: T }> {
     if (!this.client || !this.client.isConnected()) {
-      return { commandId, ok: false, error: 'Not connected to Cursor' };
+      return { commandId, ok: false, error: "Not connected to Cursor" };
     }
 
     let lastError: string | undefined;
@@ -738,7 +835,7 @@ export class CommandExecutor {
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err);
         console.warn(
-          `[command-executor] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastError}`
+          `[command-executor] Attempt ${attempt + 1}/${MAX_RETRIES + 1} failed: ${lastError}`,
         );
         if (attempt < MAX_RETRIES) {
           await sleep(RETRY_DELAY_MS);
@@ -749,8 +846,11 @@ export class CommandExecutor {
     return { commandId, ok: false, error: lastError };
   }
 
-  private async openPlanModelMenu(client: CdpClient, selectorPath: string): Promise<void> {
-    const opened = await client.evaluate(`
+  private async openPlanModelMenu(
+    client: CdpClient,
+    selectorPath: string,
+  ): Promise<void> {
+    const opened = (await client.evaluate(`
       (() => {
         const selector = ${JSON.stringify(selectorPath)};
         const el = document.querySelector(selector);
@@ -759,44 +859,44 @@ export class CommandExecutor {
         el.click();
         return true;
       })()
-    `) as boolean;
-    if (!opened) throw new Error('Plan model dropdown trigger not found');
+    `)) as boolean;
+    if (!opened) throw new Error("Plan model dropdown trigger not found");
 
     await sleep(300);
-    const menuVisible = await client.evaluate(`
+    const menuVisible = (await client.evaluate(`
       (() => {
         ${MODEL_MENU_LOOKUP_JS}
         return findModelMenu() !== null;
       })()
-    `) as boolean;
-    if (!menuVisible) throw new Error('Plan model picker did not open');
+    `)) as boolean;
+    if (!menuVisible) throw new Error("Plan model picker did not open");
   }
 
   private async openPlanModelMenuAndReadOptions(
     client: CdpClient,
-    selectorPath: string
+    selectorPath: string,
   ): Promise<{ options: PlanModelOption[] }> {
     await this.openPlanModelMenu(client, selectorPath);
 
-    const options = await client.evaluate(`
+    const options = (await client.evaluate(`
       (() => {
         ${MODEL_MENU_LOOKUP_JS}
         ${MODEL_ITEM_HELPERS_JS}
         return collectModelItems(findModelMenu());
       })()
-    `) as PlanModelOption[];
+    `)) as PlanModelOption[];
 
-    await client.pressKey('Escape', 'Escape', 27);
+    await client.pressKey("Escape", "Escape", 27);
     await sleep(100);
     return { options };
   }
 
   private async openModelMenuAndReadOptions(
-    client: CdpClient
+    client: CdpClient,
   ): Promise<{ options: PlanModelOption[] }> {
     const strategies = this.selectors.modelDropdown?.strategies ?? [];
 
-    const opened = await client.evaluate(`
+    const opened = (await client.evaluate(`
       (() => {
         const strategies = ${JSON.stringify(strategies)};
         for (const sel of strategies) {
@@ -813,35 +913,35 @@ export class CommandExecutor {
         }
         return false;
       })()
-    `) as boolean;
-    if (!opened) throw new Error('Model dropdown trigger not found');
+    `)) as boolean;
+    if (!opened) throw new Error("Model dropdown trigger not found");
 
     await sleep(300);
 
-    const menuVisible = await client.evaluate(`
+    const menuVisible = (await client.evaluate(`
       (() => {
         ${MODEL_MENU_LOOKUP_JS}
         return findModelMenu() !== null;
       })()
-    `) as boolean;
-    if (!menuVisible) throw new Error('Model picker did not open');
+    `)) as boolean;
+    if (!menuVisible) throw new Error("Model picker did not open");
 
-    const options = await client.evaluate(`
+    const options = (await client.evaluate(`
       (() => {
         ${MODEL_MENU_LOOKUP_JS}
         ${MODEL_ITEM_HELPERS_JS}
         return collectModelItems(findModelMenu());
       })()
-    `) as PlanModelOption[];
+    `)) as PlanModelOption[];
 
-    await client.pressKey('Escape', 'Escape', 27);
+    await client.pressKey("Escape", "Escape", 27);
     await sleep(100);
     return { options };
   }
 
   private async findFirstMatchingSelector(
     client: CdpClient,
-    strategies: string[]
+    strategies: string[],
   ): Promise<string | null> {
     for (const selector of strategies) {
       try {
@@ -853,8 +953,10 @@ export class CommandExecutor {
     return null;
   }
 
-  private async findApproveAllButton(client: CdpClient): Promise<string | null> {
-    const found = await client.evaluate(`
+  private async findApproveAllButton(
+    client: CdpClient,
+  ): Promise<string | null> {
+    const found = (await client.evaluate(`
       (() => {
         const keywords = ${JSON.stringify(this.selectors.approveButton.textMatch ?? [])};
         const strategies = ${JSON.stringify(this.selectors.approveButton.strategies)};
@@ -905,16 +1007,19 @@ export class CommandExecutor {
 
         return false;
       })()
-    `) as boolean;
+    `)) as boolean;
 
     if (!found) {
       throw new Error('"Accept All" button not found');
     }
-    return '__clicked_inline__';
+    return "__clicked_inline__";
   }
 
-  private async clickElementCenter(client: CdpClient, selector: string): Promise<void> {
-    const rect = await client.evaluate(`
+  private async clickElementCenter(
+    client: CdpClient,
+    selector: string,
+  ): Promise<void> {
+    const rect = (await client.evaluate(`
       (() => {
         const el = document.querySelector(${JSON.stringify(selector)});
         if (!el) return null;
@@ -922,7 +1027,7 @@ export class CommandExecutor {
         const r = el.getBoundingClientRect();
         return { x: r.left + r.width / 2, y: r.top + r.height / 2, width: r.width, height: r.height };
       })()
-    `) as { x: number; y: number; width: number; height: number } | null;
+    `)) as { x: number; y: number; width: number; height: number } | null;
 
     if (!rect || rect.width === 0 || rect.height === 0) {
       throw new Error(`Element not clickable: ${selector}`);
@@ -933,5 +1038,5 @@ export class CommandExecutor {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

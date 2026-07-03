@@ -1,9 +1,10 @@
 {
   "chatContainer": {
     "strategies": [
-      "#workbench\\.parts\\.auxiliarybar",
       "div.composer-bar.editor",
       "[class*='composer-bar']",
+      ".composer-messages-container",
+      "#workbench\\.parts\\.auxiliarybar",
       "[class*='composer-panel']",
       "[class*='chat-widget']"
     ]
@@ -17,7 +18,13 @@
       "button[aria-label*='Run']",
       "button[aria-label*='Allow']"
     ],
-    "textMatch": ["Accept", "Approve", "Run", "Allow", "Accept All"]
+    "textMatch": [
+      "Accept",
+      "Approve",
+      "Run",
+      "Allow",
+      "Accept All"
+    ]
   },
   "rejectButton": {
     "strategies": [
@@ -26,7 +33,12 @@
       "button[aria-label*='Deny']",
       "button[aria-label*='Cancel']"
     ],
-    "textMatch": ["Reject", "Deny", "Cancel", "Skip"]
+    "textMatch": [
+      "Reject",
+      "Deny",
+      "Cancel",
+      "Skip"
+    ]
   },
   "chatInput": {
     "strategies": [

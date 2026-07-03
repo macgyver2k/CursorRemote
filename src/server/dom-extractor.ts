@@ -1,23 +1,24 @@
-import type { CdpClient } from './cdp-client.js';
+import { applyDerivedActivityToState } from "./activity-derive.js";
+import type { CdpClient } from "./cdp-client.js";
+import { loadExtractionFunctionSource } from "./extraction-fn-source.js";
 import type {
-  CodeBlockItem,
-  CursorState,
   ChatElement,
   ChatTab,
+  CodeBlockItem,
+  CursorState,
   DiffLineKind,
   ModeInfo,
   ModelInfo,
   SelectorConfig,
-} from './types.js';
-import { applyDerivedActivityToState } from './activity-derive.js';
+} from "./types.js";
 
 const EVALUATE_TIMEOUT_MS = 5000;
 const MAX_POLL_BACKOFF_MS = 5000;
 
 /** Canonical tab title cleaning - matches extractionFunction's cleanTabTitle for consistent lookups. */
 export function cleanTabTitle(raw: string): string {
-  let t = raw.trim().replace(/\s+/g, ' ');
-  t = t.replace(/(@[\w./]+)+\s*$/, '');
+  let t = raw.trim().replace(/\s+/g, " ");
+  t = t.replace(/(@[\w./]+)+\s*$/, "");
   return t.trim().substring(0, 120);
 }
 
@@ -39,10 +40,10 @@ export function extractionFunction(
   chatTabSelectors: string[],
   modeSelectors: string[],
   modelSelectors: string[],
-  windowTitle?: string
+  windowTitle?: string,
 ): CursorState | null {
   function projectNameFromTitle(title: string): string {
-    const idx = title.indexOf(' [');
+    const idx = title.indexOf(" [");
     return (idx >= 0 ? title.substring(0, idx) : title).trim();
   }
   function findFirst(selectors: string[]): Element | null {
@@ -50,7 +51,9 @@ export function extractionFunction(
       try {
         const el = document.querySelector(sel);
         if (el) return el;
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
     return null;
   }
@@ -59,23 +62,29 @@ export function extractionFunction(
    * Line diff stats from Edit tool UI. Tries legacy classes, then +N / -M chip spans
    * (Cursor sometimes omits or renames .ui-edit-tool-call__additions / __deletions).
    */
-  function tryParseDiffStatsFromWrapper(scope: Element): { additions?: number; deletions?: number } {
+  function tryParseDiffStatsFromWrapper(scope: Element): {
+    additions?: number;
+    deletions?: number;
+  } {
     let additions: number | undefined;
     let deletions: number | undefined;
-    const addEl = scope.querySelector('.ui-edit-tool-call__additions');
-    const delEl = scope.querySelector('.ui-edit-tool-call__deletions');
+    const addEl = scope.querySelector(".ui-edit-tool-call__additions");
+    const delEl = scope.querySelector(".ui-edit-tool-call__deletions");
     const addText = addEl?.textContent?.trim();
     const delText = delEl?.textContent?.trim();
     const addM = addText?.match(/\d+/);
     const delM = delText?.match(/\d+/);
     if (addM) additions = parseInt(addM[0], 10);
     if (delM) deletions = parseInt(delM[0], 10);
-    if (additions !== undefined || deletions !== undefined) return { additions, deletions };
+    if (additions !== undefined || deletions !== undefined)
+      return { additions, deletions };
 
-    for (const el of Array.from(scope.querySelectorAll('span, div, a'))) {
-      const t = (el.textContent || '').trim();
-      if (additions === undefined && /^\+\d+$/.test(t)) additions = parseInt(t.slice(1), 10);
-      if (deletions === undefined && /^-\d+$/.test(t)) deletions = parseInt(t.slice(1), 10);
+    for (const el of Array.from(scope.querySelectorAll("span, div, a"))) {
+      const t = (el.textContent || "").trim();
+      if (additions === undefined && /^\+\d+$/.test(t))
+        additions = parseInt(t.slice(1), 10);
+      if (deletions === undefined && /^-\d+$/.test(t))
+        deletions = parseInt(t.slice(1), 10);
       if (additions !== undefined && deletions !== undefined) break;
     }
     return { additions, deletions };
@@ -87,13 +96,15 @@ export function extractionFunction(
     while (cur && cur !== document.body) {
       let seg = cur.tagName.toLowerCase();
       if (cur.id) {
-        seg += `#${cur.id.replace(/([.:])/g, '\\$1')}`;
+        seg += `#${cur.id.replace(/([.:])/g, "\\$1")}`;
         parts.unshift(seg);
         break;
       }
       const parent: Element | null = cur.parentElement;
       if (parent) {
-        const siblings = Array.from(parent.children).filter((c: Element) => c.tagName === cur!.tagName);
+        const siblings = Array.from(parent.children).filter(
+          (c: Element) => c.tagName === cur!.tagName,
+        );
         if (siblings.length > 1) {
           seg += `:nth-of-type(${siblings.indexOf(cur) + 1})`;
         }
@@ -101,57 +112,115 @@ export function extractionFunction(
       parts.unshift(seg);
       cur = parent;
     }
-    return parts.join(' > ');
+    return parts.join(" > ");
   }
 
   try {
     const container = findFirst(containerSelectors);
     if (!container) return null;
 
-    const flatIndexEls = container.querySelectorAll('[data-flat-index]');
+    function findMessageRoot(root: Element): Element {
+      const prefer = [
+        "div.composer-bar.editor",
+        "[class*='composer-bar']",
+        ".composer-messages-container",
+        "[class*='composer-panel']",
+      ];
+      for (const sel of prefer) {
+        try {
+          if (root.matches(sel)) return root;
+          const inner = root.querySelector(sel);
+          if (inner) return inner;
+        } catch {
+          /* skip */
+        }
+      }
+      return root;
+    }
+
+    const messageRoot = findMessageRoot(container);
+    let messageWrappers = Array.from(
+      messageRoot.querySelectorAll("[data-flat-index]"),
+    );
+    let usingVirtualizedRows = false;
+    if (messageWrappers.length === 0) {
+      messageWrappers = Array.from(
+        messageRoot.querySelectorAll(".virtualized-composer-messages-row"),
+      );
+      usingVirtualizedRows = messageWrappers.length > 0;
+    }
+
     let containerComposerId =
-      container.getAttribute('data-composer-id') ||
-      container.closest('[data-composer-id]')?.getAttribute('data-composer-id') ||
-      '';
-    if (!containerComposerId && flatIndexEls.length > 0) {
-      const firstMsg = flatIndexEls[0];
-      containerComposerId = firstMsg.closest('[data-composer-id]')?.getAttribute('data-composer-id') || '';
+      container.getAttribute("data-composer-id") ||
+      container
+        .closest("[data-composer-id]")
+        ?.getAttribute("data-composer-id") ||
+      messageRoot.getAttribute("data-composer-id") ||
+      messageRoot
+        .closest("[data-composer-id]")
+        ?.getAttribute("data-composer-id") ||
+      "";
+    if (!containerComposerId && messageWrappers.length > 0) {
+      containerComposerId =
+        messageWrappers[0]
+          .closest("[data-composer-id]")
+          ?.getAttribute("data-composer-id") || "";
     }
 
     const elements: ChatElement[] = [];
     const _rawElements: Array<{
-      flatIndex: number; role?: string; kind?: string; messageId?: string;
-      toolCallId?: string; toolStatus?: string; indicators: string[];
-      textPreview: string; parsedAs: string;
+      flatIndex: number;
+      role?: string;
+      kind?: string;
+      messageId?: string;
+      toolCallId?: string;
+      toolStatus?: string;
+      indicators: string[];
+      textPreview: string;
+      parsedAs: string;
     }> = [];
 
     function detectIndicators(el: Element): string[] {
       const flags: string[] = [];
-      if (el.querySelector('.loading-indicator-v3')) flags.push('loading-v3');
-      if (el.querySelector('.make-shine')) flags.push('make-shine');
-      if (el.querySelector('.ui-collapsible.ui-step-group-collapsible')) flags.push('step-group');
-      if (el.querySelector('.composer-tool-former-message')) flags.push('compact-tool');
-      if (el.querySelector('.composer-terminal-tool-call-block-container') ||
-          el.querySelector('.composer-tool-call-container.composer-terminal-compact-mode')) flags.push('run-command');
-      if (el.querySelector('.plan-execution-message-content')) flags.push('plan-execution');
-      if (el.querySelector('.composer-create-plan-container')) flags.push('plan-create');
-      if (el.querySelector('.composer-edit-file-review-wrapper')) flags.push('edit-review');
-      if (el.querySelector('.todo-list-container')) flags.push('todo-list');
-      if (el.querySelector('.ui-tool-call-line-action')) flags.push('tool-line');
-      if (el.querySelector('.ui-edit-tool-call__filename')) flags.push('edit-file');
-      if (el.querySelector('.composer-message-group')) flags.push('message-group');
-      if (el.querySelector('.markdown-root')) flags.push('markdown');
-      if (el.querySelector('.aislash-editor-input-readonly')) flags.push('human-input');
+      if (el.querySelector(".loading-indicator-v3")) flags.push("loading-v3");
+      if (el.querySelector(".make-shine")) flags.push("make-shine");
+      if (el.querySelector(".ui-collapsible.ui-step-group-collapsible"))
+        flags.push("step-group");
+      if (el.querySelector(".composer-tool-former-message"))
+        flags.push("compact-tool");
+      if (
+        el.querySelector(".composer-terminal-tool-call-block-container") ||
+        el.querySelector(
+          ".composer-tool-call-container.composer-terminal-compact-mode",
+        )
+      )
+        flags.push("run-command");
+      if (el.querySelector(".plan-execution-message-content"))
+        flags.push("plan-execution");
+      if (el.querySelector(".composer-create-plan-container"))
+        flags.push("plan-create");
+      if (el.querySelector(".composer-edit-file-review-wrapper"))
+        flags.push("edit-review");
+      if (el.querySelector(".todo-list-container")) flags.push("todo-list");
+      if (el.querySelector(".ui-tool-call-line-action"))
+        flags.push("tool-line");
+      if (el.querySelector(".ui-edit-tool-call__filename"))
+        flags.push("edit-file");
+      if (el.querySelector(".composer-message-group"))
+        flags.push("message-group");
+      if (el.querySelector(".markdown-root")) flags.push("markdown");
+      if (el.querySelector(".aislash-editor-input-readonly"))
+        flags.push("human-input");
       return flags;
     }
 
     function durationFromThoughtText(raw: string): string {
       const t = raw.trim();
       const forM = t.match(/\bfor\s+([\d.]+\s*s(?:ec(?:onds?)?)?)\b/i);
-      if (forM) return forM[1].replace(/\s+/g, '');
+      if (forM) return forM[1].replace(/\s+/g, "");
       const bareM = t.match(/^([\d.]+\s*s(?:ec(?:onds?)?)?)$/i);
-      if (bareM) return bareM[1].replace(/\s+/g, '');
-      return '';
+      if (bareM) return bareM[1].replace(/\s+/g, "");
+      return "";
     }
 
     function isDurationOnlyThoughtSpan(raw: string): boolean {
@@ -162,7 +231,7 @@ export function extractionFunction(
 
     /** Header shows a finished timing (for 2s, or trailing 9s). */
     function collapsibleHeaderTextLooksComplete(ht: string): boolean {
-      const t = ht.replace(/\s+/g, ' ').trim();
+      const t = ht.replace(/\s+/g, " ").trim();
       if (!t) return false;
       if (/\bfor\s+[\d.]+\s*s(ec(onds?)?)?\b/i.test(t)) return true;
       if (/\b[\d.]+\s*s(ec(onds?)?)?\s*$/i.test(t)) return true;
@@ -174,14 +243,18 @@ export function extractionFunction(
       detail: string;
       duration: string;
     } {
-      if (!headerEl) return { action: '', detail: '', duration: '' };
-      const headerSpans = headerEl.querySelectorAll(':scope > span');
-      let action = '';
-      let detail = '';
-      let duration = '';
+      if (!headerEl) return { action: "", detail: "", duration: "" };
+      const headerSpans = headerEl.querySelectorAll(":scope > span");
+      let action = "";
+      let detail = "";
+      let duration = "";
       for (const s of Array.from(headerSpans)) {
-        if (s.classList.contains('cursor-icon') || s.classList.contains('ui-icon')) continue;
-        const t = (s.textContent || '').trim();
+        if (
+          s.classList.contains("cursor-icon") ||
+          s.classList.contains("ui-icon")
+        )
+          continue;
+        const t = (s.textContent || "").trim();
         if (!t) continue;
         const d = durationFromThoughtText(t);
         if (d && !duration) duration = d;
@@ -190,15 +263,17 @@ export function extractionFunction(
           action = t;
           continue;
         }
-        if (t.startsWith('for ')) {
-          duration = duration || t.replace(/^for\s+/i, '').trim();
+        if (t.startsWith("for ")) {
+          duration = duration || t.replace(/^for\s+/i, "").trim();
           detail = t;
         } else {
           detail = detail || t;
         }
       }
       if (!duration) {
-        const fullHeader = (headerEl.textContent || '').replace(/\s+/g, ' ').trim();
+        const fullHeader = (headerEl.textContent || "")
+          .replace(/\s+/g, " ")
+          .trim();
         duration = durationFromThoughtText(fullHeader);
       }
       return { action, detail, duration };
@@ -217,18 +292,22 @@ export function extractionFunction(
     };
 
     function cleanCodeLine(raw: string): string {
-      return (raw || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trimEnd();
+      return (raw || "")
+        .replace(/\u00a0/g, " ")
+        .replace(/\r/g, "")
+        .trimEnd();
     }
 
     function trimOuterBlankCodeLines(lines: string[]): string[] {
       const out = [...lines];
       while (out.length > 0 && out[0].trim().length === 0) out.shift();
-      while (out.length > 0 && out[out.length - 1].trim().length === 0) out.pop();
+      while (out.length > 0 && out[out.length - 1].trim().length === 0)
+        out.pop();
       return out;
     }
 
     function joinCodeLines(lines: string[]): string {
-      return trimOuterBlankCodeLines(lines.map(cleanCodeLine)).join('\n');
+      return trimOuterBlankCodeLines(lines.map(cleanCodeLine)).join("\n");
     }
 
     function extractStructuredCodeText(root: Element): string {
@@ -236,18 +315,20 @@ export function extractionFunction(
 
       function ensureNewline(): void {
         if (parts.length === 0) return;
-        const last = parts[parts.length - 1] || '';
-        if (!last.endsWith('\n')) parts.push('\n');
+        const last = parts[parts.length - 1] || "";
+        if (!last.endsWith("\n")) parts.push("\n");
       }
 
       function hasBlockishChildren(el: Element): boolean {
         return Array.from(el.children).some((child) => {
-          const tag = (child.tagName || '').toLowerCase();
+          const tag = (child.tagName || "").toLowerCase();
           return (
-            tag === 'div' ||
-            tag === 'p' ||
-            tag === 'li' ||
-            child.matches('.ui-default-code__line-content, .view-line, [data-line], .line')
+            tag === "div" ||
+            tag === "p" ||
+            tag === "li" ||
+            child.matches(
+              ".ui-default-code__line-content, .view-line, [data-line], .line",
+            )
           );
         });
       }
@@ -255,21 +336,24 @@ export function extractionFunction(
       function walk(node: Node): void {
         if (!node) return;
         if (node.nodeType === Node.TEXT_NODE) {
-          const text = cleanCodeLine(node.textContent || '');
+          const text = cleanCodeLine(node.textContent || "");
           if (text) parts.push(text);
           return;
         }
         if (node.nodeType !== Node.ELEMENT_NODE) return;
         const el = node as Element;
-        const tag = (el.tagName || '').toLowerCase();
-        if (tag === 'br') {
+        const tag = (el.tagName || "").toLowerCase();
+        if (tag === "br") {
           ensureNewline();
           return;
         }
 
         const lineLike =
-          el.matches('.ui-default-code__line-content, .view-line, [data-line], .line') ||
-          ((tag === 'div' || tag === 'p' || tag === 'li') && !hasBlockishChildren(el));
+          el.matches(
+            ".ui-default-code__line-content, .view-line, [data-line], .line",
+          ) ||
+          ((tag === "div" || tag === "p" || tag === "li") &&
+            !hasBlockishChildren(el));
 
         const beforeCount = parts.length;
         el.childNodes.forEach(walk);
@@ -277,40 +361,44 @@ export function extractionFunction(
       }
 
       walk(root);
-      return joinCodeLines(parts.join('').split('\n'));
+      return joinCodeLines(parts.join("").split("\n"));
     }
 
     function extractComposerPlainText(cb: Element): string {
-      const codeContent = cb.querySelector('.ui-default-code__content');
+      const codeContent = cb.querySelector(".ui-default-code__content");
       const contentRoot =
         codeContent ||
-        cb.querySelector('.composer-code-block-content, .ui-code-block-content') ||
+        cb.querySelector(
+          ".composer-code-block-content, .ui-code-block-content",
+        ) ||
         cb;
-      let code = '';
+      let code = "";
       if (codeContent) {
-        const lineEls = codeContent.querySelectorAll('.ui-default-code__line-content');
+        const lineEls = codeContent.querySelectorAll(
+          ".ui-default-code__line-content",
+        );
         code =
           lineEls.length > 0
-            ? joinCodeLines(
-                Array.from(lineEls).map((l) => l.textContent || '')
-              )
+            ? joinCodeLines(Array.from(lineEls).map((l) => l.textContent || ""))
             : extractStructuredCodeText(codeContent);
       }
       if (!code) {
-        const vl = cb.querySelectorAll('.view-line');
+        const vl = cb.querySelectorAll(".view-line");
         if (vl.length > 0) {
           code = joinCodeLines(
             Array.from(vl)
-              .map((line) => line.textContent || '')
-              .filter((ln) => ln.trim().length > 0)
+              .map((line) => line.textContent || "")
+              .filter((ln) => ln.trim().length > 0),
           );
         }
       }
       if (!code) {
-        const diffEl = cb.querySelector('.composer-diff-block');
+        const diffEl = cb.querySelector(".composer-diff-block");
         if (diffEl) {
-          const vl2 = diffEl.querySelectorAll('.view-line');
-          code = joinCodeLines(Array.from(vl2).map((line) => line.textContent || ''));
+          const vl2 = diffEl.querySelectorAll(".view-line");
+          code = joinCodeLines(
+            Array.from(vl2).map((line) => line.textContent || ""),
+          );
         }
       }
       if (!code && contentRoot) code = extractStructuredCodeText(contentRoot);
@@ -318,34 +406,45 @@ export function extractionFunction(
     }
 
     function parseTopPx(style: string | null | undefined): number | undefined {
-      const m = (style || '').match(/top:\s*([\d.]+)px/);
+      const m = (style || "").match(/top:\s*([\d.]+)px/);
       return m ? parseFloat(m[1]) : undefined;
     }
 
-    function parseHeightPx(style: string | null | undefined): number | undefined {
-      const m = (style || '').match(/height:\s*([\d.]+)px/);
+    function parseHeightPx(
+      style: string | null | undefined,
+    ): number | undefined {
+      const m = (style || "").match(/height:\s*([\d.]+)px/);
       return m ? parseFloat(m[1]) : undefined;
     }
 
-    function lineKindFromOverlays(editorRoot: Element, lineTop: number): 'add' | 'rem' | null {
-      const overlayRows = editorRoot.querySelectorAll('.view-overlays > div');
+    function lineKindFromOverlays(
+      editorRoot: Element,
+      lineTop: number,
+    ): "add" | "rem" | null {
+      const overlayRows = editorRoot.querySelectorAll(".view-overlays > div");
       for (let i = 0; i < overlayRows.length; i++) {
         const row = overlayRows[i];
-        const t = parseTopPx(row.getAttribute('style'));
+        const t = parseTopPx(row.getAttribute("style"));
         if (t === undefined || Math.abs(t - lineTop) > 2) continue;
-        if (row.querySelector('.cdr.line-insert, .cdr.char-insert')) return 'add';
-        if (row.querySelector('.cdr.line-delete, .cdr.char-delete')) return 'rem';
+        if (row.querySelector(".cdr.line-insert, .cdr.char-insert"))
+          return "add";
+        if (row.querySelector(".cdr.line-delete, .cdr.char-delete"))
+          return "rem";
       }
       return null;
     }
 
-    function lineRemFromViewZones(editorRoot: Element, lineTop: number, lineHeight: number): boolean {
-      const zones = editorRoot.querySelectorAll('.view-zones > div');
+    function lineRemFromViewZones(
+      editorRoot: Element,
+      lineTop: number,
+      lineHeight: number,
+    ): boolean {
+      const zones = editorRoot.querySelectorAll(".view-zones > div");
       for (let i = 0; i < zones.length; i++) {
         const z = zones[i];
-        if (!z.classList.contains('diagonal-fill')) continue;
-        const t = parseTopPx(z.getAttribute('style'));
-        const h = parseHeightPx(z.getAttribute('style')) || 16;
+        if (!z.classList.contains("diagonal-fill")) continue;
+        const t = parseTopPx(z.getAttribute("style"));
+        const h = parseHeightPx(z.getAttribute("style")) || 16;
         if (t === undefined) continue;
         if (lineTop + lineHeight > t && lineTop < t + h) return true;
       }
@@ -354,31 +453,36 @@ export function extractionFunction(
 
     function extractViewLinesWithKinds(
       editorRoot: Element,
-      side: 'original' | 'modified'
+      side: "original" | "modified",
     ): { kind: DiffLineKind; text: string }[] {
-      const lines = editorRoot.querySelectorAll('.view-lines > .view-line');
+      const lines = editorRoot.querySelectorAll(".view-lines > .view-line");
       const out: { kind: DiffLineKind; text: string }[] = [];
       for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        const text = (line.textContent || '').replace(/\u00a0/g, ' ').replace(/\r/g, '').trimEnd();
-        const lineTop = parseTopPx(line.getAttribute('style'));
-        const ht = parseHeightPx(line.getAttribute('style')) || 16;
-        let kind: DiffLineKind = 'ctx';
+        const text = (line.textContent || "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r/g, "")
+          .trimEnd();
+        const lineTop = parseTopPx(line.getAttribute("style"));
+        const ht = parseHeightPx(line.getAttribute("style")) || 16;
+        let kind: DiffLineKind = "ctx";
         const topPx = lineTop ?? 0;
-        if (side === 'original') {
+        if (side === "original") {
           const o = lineKindFromOverlays(editorRoot, topPx);
-          if (o === 'rem') kind = 'rem';
-          else if (lineRemFromViewZones(editorRoot, topPx, ht)) kind = 'rem';
-        } else if (lineKindFromOverlays(editorRoot, topPx) === 'add') {
-          kind = 'add';
+          if (o === "rem") kind = "rem";
+          else if (lineRemFromViewZones(editorRoot, topPx, ht)) kind = "rem";
+        } else if (lineKindFromOverlays(editorRoot, topPx) === "add") {
+          kind = "add";
         }
         out.push({ kind, text });
       }
       return out;
     }
 
-    function parseUnifiedDiffLines(code: string): { kind: DiffLineKind; text: string }[] | undefined {
-      const lines = (code || '').replace(/\r/g, '').split('\n');
+    function parseUnifiedDiffLines(
+      code: string,
+    ): { kind: DiffLineKind; text: string }[] | undefined {
+      const lines = (code || "").replace(/\r/g, "").split("\n");
       if (lines.length === 0) return undefined;
 
       let addCount = 0;
@@ -388,31 +492,31 @@ export function extractionFunction(
 
       for (const rawLine of lines) {
         const line = rawLine.trimEnd();
-        let kind: DiffLineKind = 'ctx';
+        let kind: DiffLineKind = "ctx";
 
         if (
-          line.startsWith('*** Begin Patch') ||
-          line.startsWith('*** Update File:') ||
-          line.startsWith('*** Add File:') ||
-          line.startsWith('*** Delete File:') ||
-          line.startsWith('*** End Patch') ||
-          line.startsWith('*** End of File') ||
-          line.startsWith('diff --') ||
-          line.startsWith('index ') ||
-          line.startsWith('--- ') ||
-          line.startsWith('+++ ')
+          line.startsWith("*** Begin Patch") ||
+          line.startsWith("*** Update File:") ||
+          line.startsWith("*** Add File:") ||
+          line.startsWith("*** Delete File:") ||
+          line.startsWith("*** End Patch") ||
+          line.startsWith("*** End of File") ||
+          line.startsWith("diff --") ||
+          line.startsWith("index ") ||
+          line.startsWith("--- ") ||
+          line.startsWith("+++ ")
         ) {
-          kind = 'meta';
+          kind = "meta";
           signalCount++;
-        } else if (line.startsWith('@@')) {
-          kind = 'hunk';
+        } else if (line.startsWith("@@")) {
+          kind = "hunk";
           signalCount++;
-        } else if (line.startsWith('+') && !line.startsWith('+++')) {
-          kind = 'add';
+        } else if (line.startsWith("+") && !line.startsWith("+++")) {
+          kind = "add";
           addCount++;
           signalCount++;
-        } else if (line.startsWith('-') && !line.startsWith('---')) {
-          kind = 'rem';
+        } else if (line.startsWith("-") && !line.startsWith("---")) {
+          kind = "rem";
           remCount++;
           signalCount++;
         }
@@ -422,69 +526,210 @@ export function extractionFunction(
 
       const looksDiff =
         (addCount > 0 || remCount > 0) &&
-        (signalCount >= 2 || lines.some((line) => line.startsWith('@@') || line.startsWith('*** ')));
+        (signalCount >= 2 ||
+          lines.some(
+            (line) => line.startsWith("@@") || line.startsWith("*** "),
+          ));
 
       return looksDiff ? diffLines : undefined;
     }
 
     function extractCodeBlockItem(cb: Element): CodeBlockItem {
-      const headerEl = cb.querySelector('.ui-code-block-header');
-      const filenameEl = cb.querySelector('.composer-code-block-filename, .ui-code-block-filename');
-      const filename = filenameEl ? (filenameEl.textContent || '').trim() || undefined : undefined;
-      const language = headerEl ? headerEl.getAttribute('data-language') || undefined : undefined;
+      const headerEl = cb.querySelector(".ui-code-block-header");
+      const filenameEl = cb.querySelector(
+        ".composer-code-block-filename, .ui-code-block-filename",
+      );
+      const filename = filenameEl
+        ? (filenameEl.textContent || "").trim() || undefined
+        : undefined;
+      const language = headerEl
+        ? headerEl.getAttribute("data-language") || undefined
+        : undefined;
 
-      const diffEditor = cb.querySelector('.monaco-diff-editor');
+      const diffEditor = cb.querySelector(".monaco-diff-editor");
       if (diffEditor) {
-        const orig = diffEditor.querySelector('.editor.original');
-        const mod = diffEditor.querySelector('.editor.modified');
+        const orig = diffEditor.querySelector(".editor.original");
+        const mod = diffEditor.querySelector(".editor.modified");
         const diffLines: { kind: DiffLineKind; text: string }[] = [];
-        if (orig) diffLines.push(...extractViewLinesWithKinds(orig, 'original'));
-        if (mod) diffLines.push(...extractViewLinesWithKinds(mod, 'modified'));
-        const code = diffLines.map(function (d) {
-          return d.text;
-        }).join('\n');
-        return { blockKind: 'diff', filename, language, code, diffLines };
+        if (orig)
+          diffLines.push(...extractViewLinesWithKinds(orig, "original"));
+        if (mod) diffLines.push(...extractViewLinesWithKinds(mod, "modified"));
+        const code = diffLines
+          .map(function (d) {
+            return d.text;
+          })
+          .join("\n");
+        return { blockKind: "diff", filename, language, code, diffLines };
       }
 
       const code = extractComposerPlainText(cb);
       const parsedDiffLines = parseUnifiedDiffLines(code);
       if (parsedDiffLines) {
-        return { blockKind: 'diff', filename, language, code, diffLines: parsedDiffLines };
+        return {
+          blockKind: "diff",
+          filename,
+          language,
+          code,
+          diffLines: parsedDiffLines,
+        };
       }
-      return { blockKind: 'code', filename, language, code };
+      return { blockKind: "code", filename, language, code };
     }
 
-    function extractDiffBlockFromScope(scope: Element): CodeBlockItem | undefined {
-      const block = scope.querySelector('.composer-code-block-container, .composer-message-codeblock');
+    function extractDiffBlockFromScope(
+      scope: Element,
+    ): CodeBlockItem | undefined {
+      const block = scope.querySelector(
+        ".composer-code-block-container, .composer-message-codeblock",
+      );
       if (!block) return undefined;
       return extractCodeBlockItem(block);
     }
 
-    function extractToolActions(
-      container: Element
-    ): { label: string; type: 'run' | 'skip' | 'allow'; selectorPath: string }[] {
-      const actions: { label: string; type: 'run' | 'skip' | 'allow'; selectorPath: string }[] = [];
+    const cleanBtnLabel = (raw: string): string =>
+      raw
+        .replace(/\s*(Shift\+)?⏎\s*/g, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const looksLikeCorruptLabel = (s: string): boolean => {
+      if (!s || s.length > 120) return true;
+      if (/\n\s*at\s+/.test(s)) return true;
+      if (/^\s*at\s+\S/.test(s)) return true;
+      if (/node_modules[/\\]/.test(s)) return true;
+      if (/file:\/\/\//.test(s)) return true;
+      return false;
+    };
+
+    const isMenuTrigger = (btn: Element): boolean => {
+      const popup = btn.getAttribute("aria-haspopup");
+      return popup === "menu" || popup === "true" || popup === "listbox";
+    };
+
+    const isVisibleButton = (btn: Element): boolean => {
+      if (btn instanceof HTMLButtonElement && btn.disabled) return false;
+      if (btn.getAttribute("aria-disabled") === "true") return false;
+      const style = window.getComputedStyle(btn);
+      if (style.display === "none" || style.visibility === "hidden")
+        return false;
+      const rect = btn.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    };
+
+    const directButtonText = (btn: Element): string => {
+      let text = "";
+      for (const node of btn.childNodes) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          text += node.textContent || "";
+        }
+      }
+      return cleanBtnLabel(text);
+    };
+
+    const extractButtonLabel = (btn: Element, fallback: string): string => {
+      const labelEl = btn.querySelector(
+        ".ui-shell-tool-call__allowlist-button-label",
+      );
+      if (labelEl) {
+        const t = cleanBtnLabel(labelEl.textContent || "");
+        if (t && !looksLikeCorruptLabel(t)) return t;
+      }
+      const aria = cleanBtnLabel(btn.getAttribute("aria-label") || "");
+      if (aria && !looksLikeCorruptLabel(aria) && aria.length <= 80)
+        return aria;
+      const direct = directButtonText(btn);
+      if (direct && !looksLikeCorruptLabel(direct)) return direct;
+      const raw = cleanBtnLabel(btn.textContent || "");
+      if (raw && !looksLikeCorruptLabel(raw)) return raw;
+      if (aria && !looksLikeCorruptLabel(aria)) {
+        return aria.split("\n")[0].trim() || fallback;
+      }
+      return fallback;
+    };
+
+    const matchesButtonKeyword = (
+      label: string,
+      keywords: string[],
+    ): string | null => {
+      const norm = label.toLowerCase().trim();
+      if (!norm || looksLikeCorruptLabel(label)) return null;
+      for (const pat of keywords) {
+        const p = pat.toLowerCase();
+        if (norm === p) return pat;
+        if (norm.includes(p) && norm.length <= p.length + 20) return pat;
+      }
+      return null;
+    };
+
+    const isInsideEditReview = (el: Element): boolean =>
+      !!el.closest(".composer-edit-file-review-wrapper");
+
+    const isCompletedToolContext = (el: Element): boolean => {
+      const host =
+        el.closest("[data-tool-call-id]") ||
+        el.closest(".ui-tool-call-card") ||
+        el.closest(".ui-shell-tool-call");
+      if (!host) return false;
+      const status =
+        host.getAttribute("data-tool-status") ||
+        host.closest("[data-tool-status]")?.getAttribute("data-tool-status");
+      return status === "completed";
+    };
+
+    const isActionableApprovalButton = (btn: Element): boolean => {
+      if (isMenuTrigger(btn) || !isVisibleButton(btn)) return false;
+      if (isInsideEditReview(btn)) return false;
+      if (isCompletedToolContext(btn)) return false;
+      return true;
+    };
+
+    function extractToolActions(container: Element): {
+      label: string;
+      type: "run" | "skip" | "allow";
+      selectorPath: string;
+    }[] {
+      const actions: {
+        label: string;
+        type: "run" | "skip" | "allow";
+        selectorPath: string;
+      }[] = [];
       const seenPaths = new Set<string>();
 
-      const skipBtn = container.querySelector('.composer-skip-button');
-      if (skipBtn) {
+      const skipBtn = container.querySelector(".composer-skip-button");
+      if (skipBtn && isVisibleButton(skipBtn)) {
         const path = buildSelectorPath(skipBtn);
         seenPaths.add(path);
-        actions.push({ label: 'Skip', type: 'skip' as const, selectorPath: path });
+        actions.push({
+          label: extractButtonLabel(skipBtn, "Skip"),
+          type: "skip" as const,
+          selectorPath: path,
+        });
       }
 
-      const runBtns = container.querySelectorAll('.composer-run-button, .anysphere-secondary-button');
+      const runBtns = container.querySelectorAll(
+        ".composer-run-button, .anysphere-secondary-button",
+      );
       for (const btn of Array.from(runBtns)) {
+        if (!isVisibleButton(btn)) continue;
         const path = buildSelectorPath(btn);
         if (seenPaths.has(path)) continue;
         seenPaths.add(path);
-        const btnText = (btn.textContent || '').replace(/[⏎⌘⇧]/g, '').trim();
+        const btnText = extractButtonLabel(btn, "Run");
         const isAllow =
-          btn.classList.contains('anysphere-secondary-button') || btnText.toLowerCase().includes('allow');
+          btn.classList.contains("anysphere-secondary-button") ||
+          btnText.toLowerCase().includes("allow");
         if (isAllow) {
-          actions.push({ label: btnText, type: 'allow' as const, selectorPath: path });
+          actions.push({
+            label: btnText,
+            type: "allow" as const,
+            selectorPath: path,
+          });
         } else {
-          actions.push({ label: btnText || 'Run', type: 'run' as const, selectorPath: path });
+          actions.push({
+            label: btnText,
+            type: "run" as const,
+            selectorPath: path,
+          });
         }
       }
 
@@ -495,94 +740,138 @@ export function extractionFunction(
       toolRoot: Element,
       flatIndex: number,
       messageId: string,
-      patchRaw: RawElRef | null
+      patchRaw: RawElRef | null,
     ): { element: ChatElement; parsedAs: string } | null {
-      const toolEl = toolRoot.querySelector('[data-tool-call-id]') || toolRoot;
-      const toolCallId = toolEl.getAttribute('data-tool-call-id') || `tool-${flatIndex}`;
-      const toolStatus = (toolEl.getAttribute('data-tool-status') ||
-        toolRoot.getAttribute('data-tool-status') ||
-        'completed') as 'loading' | 'completed';
+      const toolEl = toolRoot.querySelector("[data-tool-call-id]") || toolRoot;
+      const toolCallId =
+        toolEl.getAttribute("data-tool-call-id") || `tool-${flatIndex}`;
+      const toolStatus = (toolEl.getAttribute("data-tool-status") ||
+        toolRoot.getAttribute("data-tool-status") ||
+        "completed") as "loading" | "completed";
       if (patchRaw) {
         patchRaw.toolCallId = toolCallId;
         patchRaw.toolStatus = toolStatus;
       }
 
-      const planContainer = toolRoot.querySelector('.composer-create-plan-container');
+      const planContainer = toolRoot.querySelector(
+        ".composer-create-plan-container",
+      );
       if (planContainer) {
-        const label = (planContainer.querySelector('.composer-create-plan-label')?.textContent || '').trim();
-        const title = (planContainer.querySelector('.composer-create-plan-title')?.textContent || '').trim();
-        const descRoot = planContainer.querySelector('.composer-create-plan-text .markdown-root');
-        const description = descRoot ? (descRoot.textContent || '').trim() : undefined;
-        const descriptionHtml = descRoot ? (descRoot.innerHTML || '').trim() : undefined;
+        const label = (
+          planContainer.querySelector(".composer-create-plan-label")
+            ?.textContent || ""
+        ).trim();
+        const title = (
+          planContainer.querySelector(".composer-create-plan-title")
+            ?.textContent || ""
+        ).trim();
+        const descRoot = planContainer.querySelector(
+          ".composer-create-plan-text .markdown-root",
+        );
+        const description = descRoot
+          ? (descRoot.textContent || "").trim()
+          : undefined;
+        const descriptionHtml = descRoot
+          ? (descRoot.innerHTML || "").trim()
+          : undefined;
 
-        const todoItems = planContainer.querySelectorAll('.composer-create-plan-todo-item');
-        const todos: { text: string; status: 'pending' | 'completed' | 'in_progress' }[] = [];
+        const todoItems = planContainer.querySelectorAll(
+          ".composer-create-plan-todo-item",
+        );
+        const todos: {
+          text: string;
+          status: "pending" | "completed" | "in_progress";
+        }[] = [];
         let todosCompleted = 0;
         let todosTotal = 0;
         let todosMoreCount: number | undefined;
         for (const item of Array.from(todoItems)) {
-          if (item.querySelector('.composer-plan-todo-ellipsis')) {
-            const moreEl = item.querySelector('.composer-plan-todo-more-text');
-            const moreText = (moreEl?.textContent || '').trim();
+          if (item.querySelector(".composer-plan-todo-ellipsis")) {
+            const moreEl = item.querySelector(".composer-plan-todo-more-text");
+            const moreText = (moreEl?.textContent || "").trim();
             const moreMatch = moreText.match(/(\d+)\s+more/i);
             if (moreMatch) todosMoreCount = parseInt(moreMatch[1], 10);
             continue;
           }
-          const contentEl = item.querySelector('.composer-create-plan-todo-content');
+          const contentEl = item.querySelector(
+            ".composer-create-plan-todo-content",
+          );
           if (!contentEl) continue;
-          const text = (contentEl.textContent || '').trim();
+          const text = (contentEl.textContent || "").trim();
           if (!text) continue;
-          const indicator = item.querySelector('.composer-plan-todo-indicator');
-          let status: 'pending' | 'completed' | 'in_progress' = 'pending';
+          const indicator = item.querySelector(".composer-plan-todo-indicator");
+          let status: "pending" | "completed" | "in_progress" = "pending";
           if (indicator) {
-            const cls = indicator.className || '';
-            if (cls.includes('completed')) {
-              status = 'completed';
+            const cls = indicator.className || "";
+            if (cls.includes("completed")) {
+              status = "completed";
               todosCompleted++;
-            } else if (cls.includes('in_progress') || cls.includes('in-progress')) status = 'in_progress';
+            } else if (
+              cls.includes("in_progress") ||
+              cls.includes("in-progress")
+            )
+              status = "in_progress";
           }
           todosTotal++;
           todos.push({ text, status });
         }
 
-        const todosHeader = (planContainer.querySelector('.composer-create-plan-todos-header')?.textContent || '').trim();
+        const todosHeader = (
+          planContainer.querySelector(".composer-create-plan-todos-header")
+            ?.textContent || ""
+        ).trim();
         const headerMatch = todosHeader.match(/(\d+)/);
         if (headerMatch && todosTotal === 0) {
           todosTotal = parseInt(headerMatch[0], 10);
         }
 
-        const actions: { label: string; type: 'view_plan' | 'build'; selectorPath: string }[] = [];
-        const viewPlanBtn = planContainer.querySelector('.composer-create-plan-view-plan-button');
+        const actions: {
+          label: string;
+          type: "view_plan" | "build";
+          selectorPath: string;
+        }[] = [];
+        const viewPlanBtn = planContainer.querySelector(
+          ".composer-create-plan-view-plan-button",
+        );
         if (viewPlanBtn) {
           actions.push({
-            label: 'View Plan',
-            type: 'view_plan' as const,
+            label: "View Plan",
+            type: "view_plan" as const,
             selectorPath: buildSelectorPath(viewPlanBtn),
           });
         }
         let buildBtn: Element | null = null;
-        const buildCandidates = planContainer.querySelectorAll('.composer-create-plan-build-button');
+        const buildCandidates = planContainer.querySelectorAll(
+          ".composer-create-plan-build-button",
+        );
         for (const b of Array.from(buildCandidates)) {
-          const tx = (b.textContent || '').replace(/\s+/g, ' ').trim();
+          const tx = (b.textContent || "").replace(/\s+/g, " ").trim();
           if (/build/i.test(tx) && tx.length > 2) {
             buildBtn = b;
             break;
           }
         }
-        if (!buildBtn && buildCandidates.length > 0) buildBtn = buildCandidates[0];
+        if (!buildBtn && buildCandidates.length > 0)
+          buildBtn = buildCandidates[0];
         if (buildBtn) {
-          actions.push({ label: 'Build', type: 'build' as const, selectorPath: buildSelectorPath(buildBtn) });
+          actions.push({
+            label: "Build",
+            type: "build" as const,
+            selectorPath: buildSelectorPath(buildBtn),
+          });
         }
 
-        const modelEl = planContainer.querySelector('.composer-unified-dropdown-model');
+        const modelEl = planContainer.querySelector(
+          ".composer-unified-dropdown-model",
+        );
         let model: string | undefined;
         let modelDropdownSelectorPath: string | undefined;
         if (modelEl) {
           modelDropdownSelectorPath = buildSelectorPath(modelEl);
-          const spans = modelEl.querySelectorAll('span');
+          const spans = modelEl.querySelectorAll("span");
           for (const s of Array.from(spans)) {
-            const t = (s.textContent || '').trim();
-            if (t && !t.includes('chevron') && t.length > 1) {
+            const t = (s.textContent || "").trim();
+            if (t && !t.includes("chevron") && t.length > 1) {
               model = t;
               break;
             }
@@ -591,7 +880,7 @@ export function extractionFunction(
 
         return {
           element: {
-            type: 'plan' as const,
+            type: "plan" as const,
             id: messageId,
             flatIndex,
             label,
@@ -606,28 +895,38 @@ export function extractionFunction(
             modelDropdownSelectorPath,
             actions: actions.length > 0 ? actions : undefined,
           },
-          parsedAs: 'plan',
+          parsedAs: "plan",
         };
       }
 
       const runContainer =
-        toolRoot.querySelector('.composer-terminal-tool-call-block-container') ||
-        toolRoot.querySelector('.composer-tool-call-container.composer-terminal-compact-mode');
+        toolRoot.querySelector(
+          ".composer-terminal-tool-call-block-container",
+        ) ||
+        toolRoot.querySelector(
+          ".composer-tool-call-container.composer-terminal-compact-mode",
+        );
       if (runContainer) {
-        const descEl = runContainer.querySelector('.composer-terminal-top-header-description');
-        const candidatesEl = runContainer.querySelector('.composer-terminal-top-header-candidates');
+        const descEl = runContainer.querySelector(
+          ".composer-terminal-top-header-description",
+        );
+        const candidatesEl = runContainer.querySelector(
+          ".composer-terminal-top-header-candidates",
+        );
         const commandEl =
-          runContainer.querySelector('.composer-terminal-command-expanded-text') ||
-          runContainer.querySelector('.composer-terminal-command-editor') ||
-          runContainer.querySelector('.composer-terminal-command-wrapper') ||
-          runContainer.querySelector('.composer-tool-call-header-content');
-        const description = (descEl?.textContent || '').trim();
-        const candidates = (candidatesEl?.textContent || '').trim();
+          runContainer.querySelector(
+            ".composer-terminal-command-expanded-text",
+          ) ||
+          runContainer.querySelector(".composer-terminal-command-editor") ||
+          runContainer.querySelector(".composer-terminal-command-wrapper") ||
+          runContainer.querySelector(".composer-tool-call-header-content");
+        const description = (descEl?.textContent || "").trim();
+        const candidates = (candidatesEl?.textContent || "").trim();
 
-        let command = '';
+        let command = "";
         if (commandEl) {
-          const rawCmd = (commandEl.textContent || '').replace(/^\$\s*/, '');
-          const cmdLines = rawCmd.split('\n');
+          const rawCmd = (commandEl.textContent || "").replace(/^\$\s*/, "");
+          const cmdLines = rawCmd.split("\n");
           const nonEmpty = cmdLines.filter(function (l: string) {
             return l.trim().length > 0;
           });
@@ -644,7 +943,7 @@ export function extractionFunction(
             .map(function (l: string) {
               return l.length >= minIndent ? l.substring(minIndent) : l;
             })
-            .join('\n')
+            .join("\n")
             .trim();
         }
 
@@ -652,7 +951,7 @@ export function extractionFunction(
 
         return {
           element: {
-            type: 'run_command' as const,
+            type: "run_command" as const,
             id: messageId,
             flatIndex,
             toolCallId,
@@ -661,20 +960,28 @@ export function extractionFunction(
             command,
             actions: runActions,
           },
-          parsedAs: 'run_command',
+          parsedAs: "run_command",
         };
       }
 
-      const editReviewEl = toolRoot.querySelector('.composer-edit-file-review-wrapper');
+      const editReviewEl = toolRoot.querySelector(
+        ".composer-edit-file-review-wrapper",
+      );
       if (editReviewEl) {
-        const filenameEl = editReviewEl.querySelector('.composer-code-block-filename');
-        const filename = filenameEl ? (filenameEl.textContent || '').trim() : undefined;
+        const filenameEl = editReviewEl.querySelector(
+          ".composer-code-block-filename",
+        );
+        const filename = filenameEl
+          ? (filenameEl.textContent || "").trim()
+          : undefined;
 
-        const statusSpans = editReviewEl.querySelectorAll('.composer-code-block-status span');
+        const statusSpans = editReviewEl.querySelectorAll(
+          ".composer-code-block-status span",
+        );
         let additions: number | undefined;
         let deletions: number | undefined;
         for (const s of Array.from(statusSpans)) {
-          const t = (s.textContent || '').trim();
+          const t = (s.textContent || "").trim();
           const addM = t.match(/^\+(\d+)$/);
           const delM = t.match(/^-(\d+)$/);
           if (addM) additions = parseInt(addM[1], 10);
@@ -684,12 +991,20 @@ export function extractionFunction(
         if (additions === undefined) additions = editDiffFb.additions;
         if (deletions === undefined) deletions = editDiffFb.deletions;
 
-        const blockedPill = editReviewEl.querySelector('.block-attribution-pill');
+        const blockedPill = editReviewEl.querySelector(
+          ".block-attribution-pill",
+        );
         const blocked = blockedPill
-          ? (blockedPill.getAttribute('aria-label') || blockedPill.textContent || '').trim()
+          ? (
+              blockedPill.getAttribute("aria-label") ||
+              blockedPill.textContent ||
+              ""
+            ).trim()
           : undefined;
 
-        const statusRow = editReviewEl.querySelector('.composer-tool-call-status-row');
+        const statusRow = editReviewEl.querySelector(
+          ".composer-tool-call-status-row",
+        );
         const editActions = statusRow
           ? extractToolActions(statusRow)
           : extractToolActions(editReviewEl);
@@ -697,13 +1012,13 @@ export function extractionFunction(
         const diffBlock = extractDiffBlockFromScope(editReviewEl);
         return {
           element: {
-            type: 'tool' as const,
+            type: "tool" as const,
             id: messageId,
             flatIndex,
             toolCallId,
             status: toolStatus,
-            action: 'Edit',
-            details: '',
+            action: "Edit",
+            details: "",
             filename,
             additions,
             deletions,
@@ -711,34 +1026,44 @@ export function extractionFunction(
             actions: editActions.length > 0 ? editActions : undefined,
             ...(diffBlock ? { diffBlock } : {}),
           },
-          parsedAs: 'tool:edit-review',
+          parsedAs: "tool:edit-review",
         };
       }
 
-      const todoListContainer = toolRoot.querySelector('.todo-list-container');
+      const todoListContainer = toolRoot.querySelector(".todo-list-container");
       if (todoListContainer) {
-        const headerElTodo = todoListContainer.querySelector('.todo-list-header-left-title');
-        const title = (headerElTodo?.textContent || 'To-dos').replace(/\d+\s*$/, '').trim();
-        const todoItems2 = todoListContainer.querySelectorAll('.ui-todo-item');
-        const todos2: { text: string; status: 'pending' | 'completed' | 'in_progress' }[] = [];
+        const headerElTodo = todoListContainer.querySelector(
+          ".todo-list-header-left-title",
+        );
+        const title = (headerElTodo?.textContent || "To-dos")
+          .replace(/\d+\s*$/, "")
+          .trim();
+        const todoItems2 = todoListContainer.querySelectorAll(".ui-todo-item");
+        const todos2: {
+          text: string;
+          status: "pending" | "completed" | "in_progress";
+        }[] = [];
         let todosCompleted2 = 0;
         for (const item of Array.from(todoItems2)) {
-          const contentEl2 = item.querySelector('.ui-todo-item__content');
-          const text = (contentEl2?.textContent || '').trim();
+          const contentEl2 = item.querySelector(".ui-todo-item__content");
+          const text = (contentEl2?.textContent || "").trim();
           if (!text) continue;
-          const cls = item.className || '';
-          let status: 'pending' | 'completed' | 'in_progress' = 'pending';
-          if (cls.includes('completed')) {
-            status = 'completed';
+          const cls = item.className || "";
+          let status: "pending" | "completed" | "in_progress" = "pending";
+          if (cls.includes("completed")) {
+            status = "completed";
             todosCompleted2++;
-          } else if (cls.includes('dimmed') || (contentEl2 && contentEl2.className.includes('in-progress'))) {
-            status = 'in_progress';
+          } else if (
+            cls.includes("dimmed") ||
+            (contentEl2 && contentEl2.className.includes("in-progress"))
+          ) {
+            status = "in_progress";
           }
           todos2.push({ text, status });
         }
         return {
           element: {
-            type: 'todo_list' as const,
+            type: "todo_list" as const,
             id: messageId,
             flatIndex,
             title,
@@ -746,22 +1071,28 @@ export function extractionFunction(
             todosTotal: todos2.length,
             todos: todos2,
           },
-          parsedAs: 'todo_list',
+          parsedAs: "todo_list",
         };
       }
 
-      const compactEl = toolRoot.querySelector('.composer-tool-former-message');
+      const compactEl = toolRoot.querySelector(".composer-tool-former-message");
       if (compactEl) {
-        let actionPart = '';
-        let descPart = '';
+        let actionPart = "";
+        let descPart = "";
 
-        const headerContent = compactEl.querySelector('.composer-tool-call-header-content');
+        const headerContent = compactEl.querySelector(
+          ".composer-tool-call-header-content",
+        );
         if (headerContent) {
-          const headerSpans = headerContent.querySelectorAll('span');
+          const headerSpans = headerContent.querySelectorAll("span");
           for (const s of Array.from(headerSpans)) {
-            const txt = (s.textContent || '').trim();
+            const txt = (s.textContent || "").trim();
             if (!txt) continue;
-            if (s.classList.toString().includes('codicon') || s.classList.toString().includes('cursor-icon')) continue;
+            if (
+              s.classList.toString().includes("codicon") ||
+              s.classList.toString().includes("cursor-icon")
+            )
+              continue;
             if (!actionPart) {
               actionPart = txt;
             } else if (!descPart) {
@@ -769,13 +1100,24 @@ export function extractionFunction(
             }
           }
         } else {
-          const spans = compactEl.querySelectorAll('span');
+          const spans = compactEl.querySelectorAll("span");
           for (const s of Array.from(spans)) {
-            if (s.closest('.composer-tool-call-control-row') || s.closest('.composer-tool-call-status-row')) continue;
-            const txt = (s.textContent || '').trim();
+            if (
+              s.closest(".composer-tool-call-control-row") ||
+              s.closest(".composer-tool-call-status-row")
+            )
+              continue;
+            const txt = (s.textContent || "").trim();
             if (!txt) continue;
-            if (s.classList.toString().includes('codicon') || s.classList.toString().includes('cursor-icon')) continue;
-            if (s.classList.contains('truncate-one-line') || s.classList.toString().includes('truncate')) {
+            if (
+              s.classList.toString().includes("codicon") ||
+              s.classList.toString().includes("cursor-icon")
+            )
+              continue;
+            if (
+              s.classList.contains("truncate-one-line") ||
+              s.classList.toString().includes("truncate")
+            ) {
               descPart = txt;
             } else if (!actionPart) {
               actionPart = txt;
@@ -785,56 +1127,70 @@ export function extractionFunction(
 
         const compactActions = extractToolActions(compactEl);
         const summaryText = headerContent
-          ? ''
-          : (compactEl.textContent || '').trim();
+          ? ""
+          : (compactEl.textContent || "").trim();
         const compactDiff = tryParseDiffStatsFromWrapper(toolRoot);
         const diffBlockCompact = extractDiffBlockFromScope(toolRoot);
         return {
           element: {
-            type: 'tool' as const,
+            type: "tool" as const,
             id: messageId,
             flatIndex,
             toolCallId,
             status: toolStatus,
-            action: actionPart || '',
-            details: descPart || '',
-            summaryText: !actionPart && !descPart && summaryText ? summaryText : undefined,
+            action: actionPart || "",
+            details: descPart || "",
+            summaryText:
+              !actionPart && !descPart && summaryText ? summaryText : undefined,
             additions: compactDiff.additions,
             deletions: compactDiff.deletions,
             actions: compactActions.length > 0 ? compactActions : undefined,
             ...(diffBlockCompact ? { diffBlock: diffBlockCompact } : {}),
           },
-          parsedAs: 'tool:compact',
+          parsedAs: "tool:compact",
         };
       }
 
-      const actionEl = toolRoot.querySelector('.ui-tool-call-line-action');
-      const detailsEl = toolRoot.querySelector('.ui-tool-call-line-details');
-      let action = (actionEl?.textContent || '').trim();
-      let details = (detailsEl?.textContent || '').trim();
+      const actionEl = toolRoot.querySelector(".ui-tool-call-line-action");
+      const detailsEl = toolRoot.querySelector(".ui-tool-call-line-details");
+      let action = (actionEl?.textContent || "").trim();
+      let details = (detailsEl?.textContent || "").trim();
 
-      const filenameEl2 = toolRoot.querySelector('.ui-edit-tool-call__filename');
-      const additionsEl = toolRoot.querySelector('.ui-edit-tool-call__additions');
-      const deletionsEl = toolRoot.querySelector('.ui-edit-tool-call__deletions');
-      const filename2 = filenameEl2 ? (filenameEl2.textContent || '').trim() : undefined;
-      const addMatch = additionsEl ? (additionsEl.textContent || '').match(/\d+/) : null;
-      const delMatch = deletionsEl ? (deletionsEl.textContent || '').match(/\d+/) : null;
+      const filenameEl2 = toolRoot.querySelector(
+        ".ui-edit-tool-call__filename",
+      );
+      const additionsEl = toolRoot.querySelector(
+        ".ui-edit-tool-call__additions",
+      );
+      const deletionsEl = toolRoot.querySelector(
+        ".ui-edit-tool-call__deletions",
+      );
+      const filename2 = filenameEl2
+        ? (filenameEl2.textContent || "").trim()
+        : undefined;
+      const addMatch = additionsEl
+        ? (additionsEl.textContent || "").match(/\d+/)
+        : null;
+      const delMatch = deletionsEl
+        ? (deletionsEl.textContent || "").match(/\d+/)
+        : null;
       let additions2 = addMatch ? parseInt(addMatch[0], 10) : undefined;
       let deletions2 = delMatch ? parseInt(delMatch[0], 10) : undefined;
       const lineDiffFb = tryParseDiffStatsFromWrapper(toolRoot);
       if (additions2 === undefined) additions2 = lineDiffFb.additions;
       if (deletions2 === undefined) deletions2 = lineDiffFb.deletions;
 
-      const shellCmd = toolRoot.querySelector('.ui-shell-tool-call__command');
-      if (shellCmd && !details) details = (shellCmd.textContent || '').trim();
+      const shellCmd = toolRoot.querySelector(".ui-shell-tool-call__command");
+      if (shellCmd && !details) details = (shellCmd.textContent || "").trim();
 
       if (!action) {
-        const cardHeader = toolRoot.querySelector('.ui-tool-call-card__header');
-        if (cardHeader) action = (cardHeader.textContent || '').trim().split('\n')[0].trim();
+        const cardHeader = toolRoot.querySelector(".ui-tool-call-card__header");
+        if (cardHeader)
+          action = (cardHeader.textContent || "").trim().split("\n")[0].trim();
       }
 
       if (!action) {
-        const fullText = (toolRoot.textContent || '').trim();
+        const fullText = (toolRoot.textContent || "").trim();
         if (fullText.length > 0 && fullText.length < 200) {
           action = fullText.substring(0, 60);
         }
@@ -844,30 +1200,36 @@ export function extractionFunction(
       const fallbackActions = extractToolActions(toolRoot);
       return {
         element: {
-          type: 'tool' as const,
+          type: "tool" as const,
           id: messageId,
           flatIndex,
           toolCallId,
           status: toolStatus,
-          action: action || 'Tool',
+          action: action || "Tool",
           details,
-          filename: filename2 || (action === 'Edit' || action === 'Write' ? details : undefined),
+          filename:
+            filename2 ||
+            (action === "Edit" || action === "Write" ? details : undefined),
           additions: additions2,
           deletions: deletions2,
           actions: fallbackActions.length > 0 ? fallbackActions : undefined,
           ...(diffBlockLine ? { diffBlock: diffBlockLine } : {}),
         },
-        parsedAs: !action && !details && !filename2 ? 'tool:fallback' : 'tool',
+        parsedAs: !action && !details && !filename2 ? "tool:fallback" : "tool",
       };
     }
 
-    for (const wrapper of Array.from(flatIndexEls)) {
-      const flatIndex = parseInt(wrapper.getAttribute('data-flat-index') || '0', 10);
+    for (let wi = 0; wi < messageWrappers.length; wi++) {
+      const wrapper = messageWrappers[wi];
+      const flatIndex = usingVirtualizedRows
+        ? wi
+        : parseInt(wrapper.getAttribute("data-flat-index") || String(wi), 10);
 
-      const msgEl = wrapper.querySelector('[data-message-role]') || wrapper;
-      const role = msgEl.getAttribute('data-message-role');
-      const kind = msgEl.getAttribute('data-message-kind');
-      const messageId = msgEl.getAttribute('data-message-id') || `fi-${flatIndex}`;
+      const msgEl = wrapper.querySelector("[data-message-role]") || wrapper;
+      const role = msgEl.getAttribute("data-message-role");
+      const kind = msgEl.getAttribute("data-message-kind");
+      const messageId =
+        msgEl.getAttribute("data-message-id") || `fi-${flatIndex}`;
 
       const rawEl = {
         flatIndex,
@@ -877,65 +1239,111 @@ export function extractionFunction(
         toolCallId: undefined as string | undefined,
         toolStatus: undefined as string | undefined,
         indicators: detectIndicators(wrapper),
-        textPreview: (wrapper.textContent || '').trim().substring(0, 120),
-        parsedAs: 'unknown',
+        textPreview: (wrapper.textContent || "").trim().substring(0, 120),
+        parsedAs: "unknown",
       };
       _rawElements.push(rawEl);
 
+      if (!role) {
+        rawEl.parsedAs = "skipped:no-role";
+        continue;
+      }
+
       // --- Loading indicator (skip as content — handled as agentActivity) ---
-      if (wrapper.querySelector('.loading-indicator-v3')) {
-        rawEl.parsedAs = 'skipped:loading';
+      if (wrapper.querySelector(".loading-indicator-v3")) {
+        rawEl.parsedAs = "skipped:loading";
+        continue;
+      }
+
+      // --- Virtualized thinking step (Cursor 3.9+) ---
+      if (role === "ai" && kind === "thinking") {
+        const markdownRoot = wrapper.querySelector(".markdown-root");
+        const text = (
+          markdownRoot?.textContent ||
+          wrapper.textContent ||
+          ""
+        ).trim();
+        const collapseEl = wrapper.querySelector(".ui-collapsible-header");
+        const parsed = parseThoughtSpansFromHeader(collapseEl);
+        elements.push({
+          type: "thought" as const,
+          id: messageId,
+          flatIndex,
+          duration: parsed.duration || undefined,
+          action:
+            parsed.action || text.split("\n")[0]?.slice(0, 120) || "Thinking",
+          detail:
+            parsed.detail ||
+            (text.length > 120 ? text.slice(0, 500) : undefined),
+          thoughtKind: "thinking_step" as const,
+        });
+        rawEl.parsedAs = "thought:virtualized";
         continue;
       }
 
       // --- Composer message group: Explored + nested ui-thinking-collapsible + tools (one flat-index) ---
-      const composerGroup = wrapper.querySelector('.composer-message-group');
-      const stepGroupCollapsible = wrapper.querySelector('.ui-collapsible.ui-step-group-collapsible');
+      const composerGroup = wrapper.querySelector(".composer-message-group");
+      const stepGroupCollapsible = wrapper.querySelector(
+        ".ui-collapsible.ui-step-group-collapsible",
+      );
       if (composerGroup && stepGroupCollapsible) {
-        rawEl.parsedAs = 'message-group';
-        const outerHeader = stepGroupCollapsible.querySelector(':scope > .ui-collapsible-header');
+        rawEl.parsedAs = "message-group";
+        const outerHeader = stepGroupCollapsible.querySelector(
+          ":scope > .ui-collapsible-header",
+        );
         const outerParsed = parseThoughtSpansFromHeader(outerHeader);
         if (outerParsed.action || outerParsed.detail || outerParsed.duration) {
           elements.push({
-            type: 'thought' as const,
+            type: "thought" as const,
             id: `thought-${flatIndex}-summary`,
             flatIndex,
             duration: outerParsed.duration,
             action: outerParsed.action || undefined,
             detail: outerParsed.detail || undefined,
-            thoughtKind: 'step_summary' as const,
+            thoughtKind: "step_summary" as const,
           });
         }
-        const contentEl = stepGroupCollapsible.querySelector(':scope > .ui-collapsible-content');
+        const contentEl = stepGroupCollapsible.querySelector(
+          ":scope > .ui-collapsible-content",
+        );
         const column = contentEl?.firstElementChild;
         if (column) {
           let seq = 0;
           for (const child of Array.from(column.children)) {
-            if (child.classList.contains('ui-thinking-collapsible')) {
-              const h = child.querySelector(':scope > .ui-collapsible-header');
+            if (child.classList.contains("ui-thinking-collapsible")) {
+              const h = child.querySelector(":scope > .ui-collapsible-header");
               const p = parseThoughtSpansFromHeader(h);
               if (p.action || p.detail || p.duration) {
                 elements.push({
-                  type: 'thought' as const,
+                  type: "thought" as const,
                   id: `thought-${flatIndex}-s${seq}`,
                   flatIndex,
                   duration: p.duration,
                   action: p.action || undefined,
                   detail: p.detail || undefined,
-                  thoughtKind: 'thinking_step' as const,
+                  thoughtKind: "thinking_step" as const,
                 });
               }
               seq++;
               continue;
             }
             const toolHost =
-              child.getAttribute('data-message-role') === 'ai' && child.getAttribute('data-message-kind') === 'tool'
+              child.getAttribute("data-message-role") === "ai" &&
+              child.getAttribute("data-message-kind") === "tool"
                 ? child
-                : child.querySelector(':scope > [data-message-role="ai"][data-message-kind="tool"]');
+                : child.querySelector(
+                    ':scope > [data-message-role="ai"][data-message-kind="tool"]',
+                  );
             if (toolHost) {
               const mid =
-                toolHost.getAttribute('data-message-id') || `fi-${flatIndex}-g${seq}`;
-              const parsedTool = extractAiTool(toolHost as Element, flatIndex, mid, null);
+                toolHost.getAttribute("data-message-id") ||
+                `fi-${flatIndex}-g${seq}`;
+              const parsedTool = extractAiTool(
+                toolHost as Element,
+                flatIndex,
+                mid,
+                null,
+              );
               if (parsedTool) {
                 elements.push(parsedTool.element);
                 seq++;
@@ -947,34 +1355,44 @@ export function extractionFunction(
       }
 
       // --- Step-group header (Thought, Explored, Searched, Read, etc.) — lone wrapper, no message-role ---
-      const thoughtEl = wrapper.querySelector('.ui-collapsible.ui-step-group-collapsible');
+      const thoughtEl = wrapper.querySelector(
+        ".ui-collapsible.ui-step-group-collapsible",
+      );
       if (thoughtEl && !role) {
-        const hdr = thoughtEl.querySelector('.ui-collapsible-header');
+        const hdr = thoughtEl.querySelector(".ui-collapsible-header");
         const parsed = parseThoughtSpansFromHeader(hdr);
         elements.push({
-          type: 'thought' as const,
+          type: "thought" as const,
           id: `thought-${flatIndex}`,
           flatIndex,
           duration: parsed.duration,
           action: parsed.action || undefined,
           detail: parsed.detail || undefined,
         });
-        rawEl.parsedAs = 'thought';
+        rawEl.parsedAs = "thought";
         continue;
       }
 
       // --- Human message ---
-      if (role === 'human' && kind === 'human') {
+      if (role === "human" && kind === "human") {
         // Check for plan block
-        const planContent = wrapper.querySelector('.plan-execution-message-content');
+        const planContent = wrapper.querySelector(
+          ".plan-execution-message-content",
+        );
         if (planContent) {
-          const label = (planContent.querySelector('.plan-execution-label')?.textContent || '').trim();
-          const title = (planContent.querySelector('.plan-execution-title')?.textContent || '').trim();
-          const todoSummary = wrapper.querySelector('.todo-summary-content');
+          const label = (
+            planContent.querySelector(".plan-execution-label")?.textContent ||
+            ""
+          ).trim();
+          const title = (
+            planContent.querySelector(".plan-execution-title")?.textContent ||
+            ""
+          ).trim();
+          const todoSummary = wrapper.querySelector(".todo-summary-content");
           let todosCompleted = 0;
           let todosTotal = 0;
           if (todoSummary) {
-            const summaryText = todoSummary.textContent || '';
+            const summaryText = todoSummary.textContent || "";
             const ofMatch = summaryText.match(/(\d+)\s+of\s+(\d+)/);
             const slashMatch = summaryText.match(/(\d+)\s*\/\s*(\d+)/);
             const countMatch = ofMatch || slashMatch;
@@ -984,32 +1402,45 @@ export function extractionFunction(
             }
           }
 
-          const todos: { text: string; status: 'pending' | 'completed' | 'in_progress' }[] = [];
-          const summaryItems = wrapper.querySelectorAll('.todo-summary-item');
+          const todos: {
+            text: string;
+            status: "pending" | "completed" | "in_progress";
+          }[] = [];
+          const summaryItems = wrapper.querySelectorAll(".todo-summary-item");
           for (const item of Array.from(summaryItems)) {
-            const contentEl = item.querySelector('.todo-summary-item-content');
-            const text = (contentEl?.textContent || '').trim();
+            const contentEl = item.querySelector(".todo-summary-item-content");
+            const text = (contentEl?.textContent || "").trim();
             if (!text) continue;
-            const contentCls = contentEl?.className || '';
-            let status: 'pending' | 'completed' | 'in_progress' = 'pending';
-            if (contentCls.includes('todo-completed')) { status = 'completed'; }
-            else if (contentCls.includes('todo-in-progress') || item.querySelector('.todo-summary-in-progress-circle')) { status = 'in_progress'; }
+            const contentCls = contentEl?.className || "";
+            let status: "pending" | "completed" | "in_progress" = "pending";
+            if (contentCls.includes("todo-completed")) {
+              status = "completed";
+            } else if (
+              contentCls.includes("todo-in-progress") ||
+              item.querySelector(".todo-summary-in-progress-circle")
+            ) {
+              status = "in_progress";
+            }
             todos.push({ text, status });
           }
 
           // Collapsed: items not rendered yet. Click to expand; they'll appear next poll cycle.
           if (todos.length === 0 && todosTotal > 0) {
-            const clickable = wrapper.querySelector('.todo-summary-content-clickable') as HTMLElement | null;
+            const clickable = wrapper.querySelector(
+              ".todo-summary-content-clickable",
+            ) as HTMLElement | null;
             if (clickable) clickable.click();
           }
 
           if (todos.length > 0 && todosTotal === 0) {
             todosTotal = todos.length;
-            todosCompleted = todos.filter(function(t) { return t.status === 'completed'; }).length;
+            todosCompleted = todos.filter(function (t) {
+              return t.status === "completed";
+            }).length;
           }
 
           elements.push({
-            type: 'plan' as const,
+            type: "plan" as const,
             id: messageId,
             flatIndex,
             label,
@@ -1018,67 +1449,81 @@ export function extractionFunction(
             todosTotal,
             todos: todos.length > 0 ? todos : undefined,
           });
-          rawEl.parsedAs = 'plan';
+          rawEl.parsedAs = "plan";
           continue;
         }
 
         // Regular human message
-        const inputEl = wrapper.querySelector('.aislash-editor-input-readonly');
-        let text = (inputEl?.textContent || wrapper.textContent || '').trim();
+        const inputEl = wrapper.querySelector(".aislash-editor-input-readonly");
+        let text = (inputEl?.textContent || wrapper.textContent || "").trim();
         let quoted: { text: string } | undefined;
-        const quoteEl = inputEl?.querySelector('blockquote');
+        const quoteEl = inputEl?.querySelector("blockquote");
         if (inputEl && quoteEl) {
-          const qt = (quoteEl.textContent || '').trim();
+          const qt = (quoteEl.textContent || "").trim();
           if (qt) {
             quoted = { text: qt };
             const clone = inputEl.cloneNode(true) as HTMLElement;
-            clone.querySelectorAll('blockquote').forEach((el) => el.remove());
-            const rest = (clone.textContent || '').trim();
+            clone.querySelectorAll("blockquote").forEach((el) => el.remove());
+            const rest = (clone.textContent || "").trim();
             if (rest) text = rest;
           }
         }
-        const mentionEls = wrapper.querySelectorAll('.mention');
-        const mentions = Array.from(mentionEls).map(m => ({
-          name: m.getAttribute('data-mention-name') || (m.textContent || '').trim(),
-          mentionType: m.getAttribute('data-typeahead-type') || 'unknown',
+        const mentionEls = wrapper.querySelectorAll(".mention");
+        const mentions = Array.from(mentionEls).map((m) => ({
+          name:
+            m.getAttribute("data-mention-name") || (m.textContent || "").trim(),
+          mentionType: m.getAttribute("data-typeahead-type") || "unknown",
         }));
 
         elements.push({
-          type: 'human' as const,
+          type: "human" as const,
           id: messageId,
           flatIndex,
           text,
           mentions,
           ...(quoted ? { quoted } : {}),
         });
-        rawEl.parsedAs = 'human';
+        rawEl.parsedAs = "human";
         continue;
       }
 
       // --- AI assistant message ---
-      if (role === 'ai' && kind === 'assistant') {
-        const markdownRoot = wrapper.querySelector('.markdown-root');
-        const text = (markdownRoot?.textContent || wrapper.textContent || '').trim();
-        const html = markdownRoot?.innerHTML || '';
+      if (role === "ai" && kind === "assistant") {
+        const markdownRoot = wrapper.querySelector(".markdown-root");
+        const text = (
+          markdownRoot?.textContent ||
+          wrapper.textContent ||
+          ""
+        ).trim();
+        const html = markdownRoot?.innerHTML || "";
 
-        const codeBlockEls = wrapper.querySelectorAll('.composer-message-codeblock, .composer-code-block-container');
-        const codeBlocks = Array.from(codeBlockEls).map(cb => extractCodeBlockItem(cb));
+        const codeBlockEls = wrapper.querySelectorAll(
+          ".composer-message-codeblock, .composer-code-block-container",
+        );
+        const codeBlocks = Array.from(codeBlockEls).map((cb) =>
+          extractCodeBlockItem(cb),
+        );
 
         elements.push({
-          type: 'assistant' as const,
+          type: "assistant" as const,
           id: messageId,
           flatIndex,
           text,
           html,
           codeBlocks,
         });
-        rawEl.parsedAs = 'assistant';
+        rawEl.parsedAs = "assistant";
         continue;
       }
 
       // --- Tool call ---
-      if (role === 'ai' && kind === 'tool') {
-        const parsedTool = extractAiTool(msgEl as Element, flatIndex, messageId, rawEl);
+      if (role === "ai" && kind === "tool") {
+        const parsedTool = extractAiTool(
+          msgEl as Element,
+          flatIndex,
+          messageId,
+          rawEl,
+        );
         if (parsedTool) {
           elements.push(parsedTool.element);
           rawEl.parsedAs = parsedTool.parsedAs;
@@ -1087,20 +1532,20 @@ export function extractionFunction(
       }
 
       // --- Fallback: step-group inside a message-group wrapper ---
-      if (!role && wrapper.querySelector('.composer-message-group')) {
-        const collapseEl = wrapper.querySelector('.ui-collapsible-header');
+      if (!role && wrapper.querySelector(".composer-message-group")) {
+        const collapseEl = wrapper.querySelector(".ui-collapsible-header");
         if (collapseEl) {
-          const spans = collapseEl.querySelectorAll(':scope > span');
-          let action = '';
-          let detail = '';
-          let duration = '';
+          const spans = collapseEl.querySelectorAll(":scope > span");
+          let action = "";
+          let detail = "";
+          let duration = "";
           const durationFromTextFb = (raw: string): string => {
             const t = raw.trim();
             const forM = t.match(/\bfor\s+([\d.]+\s*s(?:ec(?:onds?)?)?)\b/i);
-            if (forM) return forM[1].replace(/\s+/g, '');
+            if (forM) return forM[1].replace(/\s+/g, "");
             const bareM = t.match(/^([\d.]+\s*s(?:ec(?:onds?)?)?)$/i);
-            if (bareM) return bareM[1].replace(/\s+/g, '');
-            return '';
+            if (bareM) return bareM[1].replace(/\s+/g, "");
+            return "";
           };
           const isDurationOnlySpanFb = (raw: string): boolean => {
             const t = raw.trim();
@@ -1108,42 +1553,61 @@ export function extractionFunction(
             return !!durationFromTextFb(t) && t.length <= 20;
           };
           for (const s of Array.from(spans)) {
-            if (s.classList.contains('cursor-icon') || s.classList.contains('ui-icon')) continue;
-            const t = (s.textContent || '').trim();
+            if (
+              s.classList.contains("cursor-icon") ||
+              s.classList.contains("ui-icon")
+            )
+              continue;
+            const t = (s.textContent || "").trim();
             if (!t) continue;
             const d = durationFromTextFb(t);
             if (d && !duration) duration = d;
             if (isDurationOnlySpanFb(t)) continue;
-            if (!action) { action = t; continue; }
-            if (t.startsWith('for ')) { duration = duration || t.replace(/^for\s+/i, '').trim(); detail = t; }
-            else { detail = detail || t; }
+            if (!action) {
+              action = t;
+              continue;
+            }
+            if (t.startsWith("for ")) {
+              duration = duration || t.replace(/^for\s+/i, "").trim();
+              detail = t;
+            } else {
+              detail = detail || t;
+            }
           }
           if (!duration) {
-            const fullHeader = (collapseEl.textContent || '').replace(/\s+/g, ' ').trim();
+            const fullHeader = (collapseEl.textContent || "")
+              .replace(/\s+/g, " ")
+              .trim();
             duration = durationFromTextFb(fullHeader);
           }
           elements.push({
-            type: 'thought' as const,
+            type: "thought" as const,
             id: `thought-${flatIndex}`,
             flatIndex,
             duration,
             action: action || undefined,
             detail: detail || undefined,
           });
-          rawEl.parsedAs = 'thought:fallback';
+          rawEl.parsedAs = "thought:fallback";
         }
       }
     }
 
     // --- Orphan activity indicators (not inside any [data-flat-index]) ---
-    const _orphanIndicators: Array<{ cls: string; text: string; parentCls: string }> = [];
-    const allIndicators = container.querySelectorAll('.loading-indicator-v3, .make-shine');
+    const _orphanIndicators: Array<{
+      cls: string;
+      text: string;
+      parentCls: string;
+    }> = [];
+    const allIndicators = container.querySelectorAll(
+      ".loading-indicator-v3, .make-shine",
+    );
     for (const ind of Array.from(allIndicators)) {
-      if (ind.closest('[data-flat-index]')) continue;
+      if (ind.closest("[data-flat-index]")) continue;
       _orphanIndicators.push({
         cls: ind.className.substring(0, 200),
-        text: (ind.textContent || '').trim().substring(0, 120),
-        parentCls: (ind.parentElement?.className || '').substring(0, 200),
+        text: (ind.textContent || "").trim().substring(0, 120),
+        parentCls: (ind.parentElement?.className || "").substring(0, 200),
       });
     }
 
@@ -1164,65 +1628,70 @@ export function extractionFunction(
     //     mode-dropdown trigger has text "Auto-Run …" and would match a
     //     generic "Run" textMatch — but it opens a settings menu, not an
     //     approval action).
-    const pendingApprovals: CursorState['pendingApprovals'] = [];
-    const isMenuTrigger = (btn: Element): boolean => {
-      const popup = btn.getAttribute('aria-haspopup');
-      return popup === 'menu' || popup === 'true' || popup === 'listbox';
-    };
-    const cleanBtnLabel = (raw: string): string =>
-      raw.replace(/\s*(Shift\+)?⏎\s*/g, '').replace(/\s+/g, ' ').trim();
-
+    const pendingApprovals: CursorState["pendingApprovals"] = [];
     const seenCards = new Set<Element>();
-    const approvalRows = container.querySelectorAll('.ui-shell-tool-call__approval-row');
+    const approvalRows = container.querySelectorAll(
+      ".ui-shell-tool-call__approval-row",
+    );
     for (const row of Array.from(approvalRows)) {
-      const card = row.closest('.ui-tool-call-card') || row.closest('.ui-shell-tool-call');
-      if (!card || seenCards.has(card)) continue;
+      const card =
+        row.closest(".ui-tool-call-card") || row.closest(".ui-shell-tool-call");
+      if (!card || seenCards.has(card) || isCompletedToolContext(card))
+        continue;
 
-      const actions: CursorState['pendingApprovals'][0]['actions'] = [];
+      const actions: CursorState["pendingApprovals"][0]["actions"] = [];
 
-      const runBtn = row.querySelector('button.ui-shell-tool-call__run-btn');
-      if (runBtn && !isMenuTrigger(runBtn)) {
+      const runBtn = row.querySelector("button.ui-shell-tool-call__run-btn");
+      if (runBtn && isActionableApprovalButton(runBtn)) {
         actions.push({
-          label: cleanBtnLabel(runBtn.textContent || '') || 'Run',
-          type: 'approve',
+          label: extractButtonLabel(runBtn, "Run"),
+          type: "approve",
           selectorPath: buildSelectorPath(runBtn),
         });
       }
-      const allowlistBtn = row.querySelector('button.ui-shell-tool-call__allowlist-button');
-      if (allowlistBtn && !isMenuTrigger(allowlistBtn)) {
-        const lblEl = allowlistBtn.querySelector('.ui-shell-tool-call__allowlist-button-label');
+      const allowlistBtn = row.querySelector(
+        "button.ui-shell-tool-call__allowlist-button",
+      );
+      if (allowlistBtn && isActionableApprovalButton(allowlistBtn)) {
         actions.push({
-          label: cleanBtnLabel(lblEl?.textContent || allowlistBtn.textContent || '') || 'Allowlist',
-          type: 'approve',
+          label: extractButtonLabel(allowlistBtn, "Allowlist"),
+          type: "approve",
           selectorPath: buildSelectorPath(allowlistBtn),
         });
       }
-      const skipBtn = row.querySelector('button.ui-shell-tool-call__skip-btn');
-      if (skipBtn && !isMenuTrigger(skipBtn)) {
+      const skipBtn = row.querySelector("button.ui-shell-tool-call__skip-btn");
+      if (skipBtn && isActionableApprovalButton(skipBtn)) {
         actions.push({
-          label: cleanBtnLabel(skipBtn.textContent || '') || 'Skip',
-          type: 'reject',
+          label: extractButtonLabel(skipBtn, "Skip"),
+          type: "reject",
           selectorPath: buildSelectorPath(skipBtn),
         });
       }
 
-      if (!actions.some((a) => a.type === 'approve')) continue;
+      if (!actions.some((a) => a.type === "approve")) continue;
       seenCards.add(card);
 
-      const cmdEl = card.querySelector('.ui-shell-tool-call__command');
-      const cmdText = (cmdEl?.textContent || '')
+      const cmdEl = card.querySelector(".ui-shell-tool-call__command");
+      const cmdText = (cmdEl?.textContent || "")
         .trim()
-        .replace(/^\$\s*/, '')
-        .replace(/\s+/g, ' ')
+        .replace(/^\$\s*/, "")
+        .replace(/\s+/g, " ")
         .substring(0, 240);
-      const descEl = card.querySelector('.ui-shell-tool-call__description');
-      const descText = (descEl?.textContent || '').trim().substring(0, 200);
-      const description = cmdText || descText || 'Pending approval';
+      const descEl = card.querySelector(".ui-shell-tool-call__description");
+      const descText = (descEl?.textContent || "").trim().substring(0, 200);
+      let description = "Shell command approval";
+      for (const candidate of [cmdText, descText]) {
+        if (candidate && !looksLikeCorruptLabel(candidate)) {
+          description = candidate;
+          break;
+        }
+      }
 
       // Stable per-card id — Cursor's tool-call id when available, falling
       // back to selector path. Keeps the entry consistent across polls.
-      const bubble = card.closest('[data-tool-call-id]');
-      const toolCallId = bubble?.getAttribute('data-tool-call-id') || buildSelectorPath(card);
+      const bubble = card.closest("[data-tool-call-id]");
+      const toolCallId =
+        bubble?.getAttribute("data-tool-call-id") || buildSelectorPath(card);
       pendingApprovals.push({
         id: `tool:${toolCallId}`,
         description,
@@ -1240,25 +1709,30 @@ export function extractionFunction(
         try {
           const btns = container.querySelectorAll(sel);
           for (const btn of Array.from(btns)) {
-            if (seenApproveBtns.has(btn) || isMenuTrigger(btn)) continue;
-            const label = btn.textContent?.trim() || btn.getAttribute('aria-label') || '';
+            if (seenApproveBtns.has(btn) || !isActionableApprovalButton(btn))
+              continue;
+            const label = extractButtonLabel(btn, "");
             if (label) {
               seenApproveBtns.add(btn);
               approveButtons.push({ label, selector: buildSelectorPath(btn) });
             }
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
       if (approveButtons.length === 0 && approveTextMatch.length > 0) {
-        for (const btn of Array.from(container.querySelectorAll('button'))) {
-          if (seenApproveBtns.has(btn) || isMenuTrigger(btn)) continue;
-          const text = `${btn.textContent?.trim() || ''} ${btn.getAttribute('aria-label') || ''}`.toLowerCase();
-          for (const pat of approveTextMatch) {
-            if (text.includes(pat.toLowerCase())) {
-              seenApproveBtns.add(btn);
-              approveButtons.push({ label: btn.textContent?.trim() || pat, selector: buildSelectorPath(btn) });
-              break;
-            }
+        for (const btn of Array.from(container.querySelectorAll("button"))) {
+          if (seenApproveBtns.has(btn) || !isActionableApprovalButton(btn))
+            continue;
+          const label = extractButtonLabel(btn, "");
+          const matched = matchesButtonKeyword(label, approveTextMatch);
+          if (matched) {
+            seenApproveBtns.add(btn);
+            approveButtons.push({
+              label: label || matched,
+              selector: buildSelectorPath(btn),
+            });
           }
         }
       }
@@ -1267,45 +1741,59 @@ export function extractionFunction(
         try {
           const btns = container.querySelectorAll(sel);
           for (const btn of Array.from(btns)) {
-            if (seenRejectBtns.has(btn) || isMenuTrigger(btn)) continue;
-            const label = btn.textContent?.trim() || btn.getAttribute('aria-label') || '';
+            if (seenRejectBtns.has(btn) || !isActionableApprovalButton(btn))
+              continue;
+            const label = extractButtonLabel(btn, "");
             if (label) {
               seenRejectBtns.add(btn);
               rejectButtons.push({ label, selector: buildSelectorPath(btn) });
             }
           }
-        } catch { /* skip */ }
+        } catch {
+          /* skip */
+        }
       }
       if (rejectButtons.length === 0 && rejectTextMatch.length > 0) {
-        for (const btn of Array.from(container.querySelectorAll('button'))) {
-          if (seenRejectBtns.has(btn) || isMenuTrigger(btn)) continue;
-          const text = `${btn.textContent?.trim() || ''} ${btn.getAttribute('aria-label') || ''}`.toLowerCase();
-          for (const pat of rejectTextMatch) {
-            if (text.includes(pat.toLowerCase())) {
-              seenRejectBtns.add(btn);
-              rejectButtons.push({ label: btn.textContent?.trim() || pat, selector: buildSelectorPath(btn) });
-              break;
-            }
+        for (const btn of Array.from(container.querySelectorAll("button"))) {
+          if (seenRejectBtns.has(btn) || !isActionableApprovalButton(btn))
+            continue;
+          const label = extractButtonLabel(btn, "");
+          const matched = matchesButtonKeyword(label, rejectTextMatch);
+          if (matched) {
+            seenRejectBtns.add(btn);
+            rejectButtons.push({
+              label: label || matched,
+              selector: buildSelectorPath(btn),
+            });
           }
         }
       }
 
       if (approveButtons.length > 0 || rejectButtons.length > 0) {
-        const actions: CursorState['pendingApprovals'][0]['actions'] = [];
+        const actions: CursorState["pendingApprovals"][0]["actions"] = [];
         for (const btn of approveButtons) {
           actions.push({
             label: btn.label,
-            type: btn.label.toLowerCase().includes('all') ? 'approve_all' : 'approve',
+            type: btn.label.toLowerCase().includes("all")
+              ? "approve_all"
+              : "approve",
             selectorPath: btn.selector,
           });
         }
         for (const btn of rejectButtons) {
-          actions.push({ label: btn.label, type: 'reject', selectorPath: btn.selector });
+          actions.push({
+            label: btn.label,
+            type: "reject",
+            selectorPath: btn.selector,
+          });
         }
-        const idParts = approveButtons.map(b => b.label).join(',') + '|' + rejectButtons.map(b => b.label).join(',');
+        const idParts =
+          approveButtons.map((b) => b.label).join(",") +
+          "|" +
+          rejectButtons.map((b) => b.label).join(",");
         pendingApprovals.push({
           id: idParts,
-          description: approveButtons[0]?.label || 'Pending approval',
+          description: "Action needs approval",
           actions,
         });
       }
@@ -1313,16 +1801,19 @@ export function extractionFunction(
 
     // --- Agent status ---
     const statusEl = findFirst(statusSelectors);
-    let agentStatus: CursorState['agentStatus'] = 'idle';
+    let agentStatus: CursorState["agentStatus"] = "idle";
     if (statusEl) {
-      const combined = `${(statusEl.textContent || '').toLowerCase()} ${statusEl.classList.toString().toLowerCase()}`;
-      if (combined.includes('think')) agentStatus = 'thinking';
-      else if (combined.includes('generat')) agentStatus = 'generating';
-      else if (combined.includes('running') || combined.includes('execut')) agentStatus = 'running_tool';
-      else if (combined.includes('approv') || combined.includes('wait')) agentStatus = 'waiting_approval';
-      else if (combined.includes('error') || combined.includes('fail')) agentStatus = 'error';
+      const combined = `${(statusEl.textContent || "").toLowerCase()} ${statusEl.classList.toString().toLowerCase()}`;
+      if (combined.includes("think")) agentStatus = "thinking";
+      else if (combined.includes("generat")) agentStatus = "generating";
+      else if (combined.includes("running") || combined.includes("execut"))
+        agentStatus = "running_tool";
+      else if (combined.includes("approv") || combined.includes("wait"))
+        agentStatus = "waiting_approval";
+      else if (combined.includes("error") || combined.includes("fail"))
+        agentStatus = "error";
     }
-    if (pendingApprovals.length > 0) agentStatus = 'waiting_approval';
+    if (pendingApprovals.length > 0) agentStatus = "waiting_approval";
 
     // Element-based status detection removed: tool loading badges and
     // run_command elements persist in the DOM long after completion.
@@ -1334,8 +1825,8 @@ export function extractionFunction(
     const chatTabs: ChatTab[] = [];
 
     function cleanTabTitle(raw: string): string {
-      let t = raw.trim().replace(/\s+/g, ' ');
-      t = t.replace(/(@[\w./]+)+\s*$/, '');
+      let t = raw.trim().replace(/\s+/g, " ");
+      t = t.replace(/(@[\w./]+)+\s*$/, "");
       return t.trim().substring(0, 120);
     }
 
@@ -1343,11 +1834,16 @@ export function extractionFunction(
       const seenTitles = new Set<string>();
       let scopeRoot: Element | null = null;
       if (containerComposerId) {
-        const allCells = document.querySelectorAll('.agent-sidebar-cell');
+        const allCells = document.querySelectorAll(".agent-sidebar-cell");
         for (const cell of Array.from(allCells)) {
-          const cid = cell.getAttribute('data-composer-id') || cell.closest('[data-composer-id]')?.getAttribute('data-composer-id');
+          const cid =
+            cell.getAttribute("data-composer-id") ||
+            cell
+              .closest("[data-composer-id]")
+              ?.getAttribute("data-composer-id");
           if (cid === containerComposerId) {
-            scopeRoot = cell.closest('.agent-sidebar-project-cell') || document.body;
+            scopeRoot =
+              cell.closest(".agent-sidebar-project-cell") || document.body;
             break;
           }
         }
@@ -1355,12 +1851,23 @@ export function extractionFunction(
       if (!scopeRoot && windowTitle) {
         const projectName = projectNameFromTitle(windowTitle).toLowerCase();
         if (projectName) {
-          const projectCells = document.querySelectorAll('.agent-sidebar-project-cell');
+          const projectCells = document.querySelectorAll(
+            ".agent-sidebar-project-cell",
+          );
           for (const cell of Array.from(projectCells)) {
-            const labelEl = cell.querySelector('.agent-sidebar-section-title-text') || cell.querySelector('.agent-sidebar-workspace-name') || cell;
-            const label = (labelEl.textContent || '').trim().toLowerCase();
-            const firstWord = (label.split(/[\s\[\]\-]/)[0] || '').toLowerCase();
-            if (label.includes(projectName) || projectName.includes(firstWord) || firstWord === projectName) {
+            const labelEl =
+              cell.querySelector(".agent-sidebar-section-title-text") ||
+              cell.querySelector(".agent-sidebar-workspace-name") ||
+              cell;
+            const label = (labelEl.textContent || "").trim().toLowerCase();
+            const firstWord = (
+              label.split(/[\s\[\]\-]/)[0] || ""
+            ).toLowerCase();
+            if (
+              label.includes(projectName) ||
+              projectName.includes(firstWord) ||
+              firstWord === projectName
+            ) {
               scopeRoot = cell;
               break;
             }
@@ -1369,23 +1876,28 @@ export function extractionFunction(
       }
       // Cursor Agents unified window: glass sidebar rows (replaces .agent-sidebar-cell in newer builds)
       const glassTabRoots = document.querySelectorAll(
-        '.glass-sidebar-agent-list-container li.ui-sidebar-menu-item > div.glass-sidebar-agent-menu-btn'
+        ".glass-sidebar-agent-list-container li.ui-sidebar-menu-item > div.glass-sidebar-agent-menu-btn",
       );
       if (glassTabRoots.length > 0) {
         for (const tab of Array.from(glassTabRoots)) {
-          const labelEl = tab.querySelector('.ui-sidebar-menu-button-label');
-          const rawAgentTitle = (labelEl?.textContent || '').trim();
+          const labelEl = tab.querySelector(".ui-sidebar-menu-button-label");
+          const rawAgentTitle = (labelEl?.textContent || "").trim();
           if (!rawAgentTitle) continue;
 
-          const group = tab.closest('.ui-sidebar-group');
-          const groupTitleEl = group?.querySelector('.ui-sidebar-group-label-title');
-          const rawGroupTitle = (groupTitleEl?.textContent || '').trim();
+          const group = tab.closest(".ui-sidebar-group");
+          const groupTitleEl = group?.querySelector(
+            ".ui-sidebar-group-label-title",
+          );
+          const rawGroupTitle = (groupTitleEl?.textContent || "").trim();
 
           let displayTitle = cleanTabTitle(rawAgentTitle);
           if (rawGroupTitle) {
             const g = cleanTabTitle(rawGroupTitle);
             if (g) {
-              displayTitle = `${g} / ${cleanTabTitle(rawAgentTitle)}`.substring(0, 120);
+              displayTitle = `${g} / ${cleanTabTitle(rawAgentTitle)}`.substring(
+                0,
+                120,
+              );
             }
           }
 
@@ -1393,17 +1905,19 @@ export function extractionFunction(
           seenTitles.add(displayTitle);
 
           const composerId =
-            tab.getAttribute('data-composer-id')
-            || tab.closest('[data-composer-id]')?.getAttribute('data-composer-id')
-            || `glass:${displayTitle}`;
+            tab.getAttribute("data-composer-id") ||
+            tab
+              .closest("[data-composer-id]")
+              ?.getAttribute("data-composer-id") ||
+            `glass:${displayTitle}`;
 
-          const isActive = tab.getAttribute('data-active') === 'true';
+          const isActive = tab.getAttribute("data-active") === "true";
 
           chatTabs.push({
             composerId,
             title: displayTitle,
             isActive,
-            status: isActive ? 'active' : 'idle',
+            status: isActive ? "active" : "idle",
             selectorPath: buildSelectorPath(tab),
           });
         }
@@ -1414,14 +1928,14 @@ export function extractionFunction(
             if (t.composerId === containerComposerId) {
               matched = true;
               t.isActive = true;
-              t.status = 'active';
+              t.status = "active";
             }
           }
           if (matched) {
             for (const t of chatTabs) {
               if (t.composerId !== containerComposerId) {
                 t.isActive = false;
-                t.status = 'idle';
+                t.status = "idle";
               }
             }
           }
@@ -1440,29 +1954,33 @@ export function extractionFunction(
         if (tabItems.length === 0) continue;
         for (const tab of Array.from(tabItems)) {
           if (scopeRoot && !scopeRoot.contains(tab)) continue;
-          const titleEl = tab.querySelector('.agent-sidebar-cell-text');
+          const titleEl = tab.querySelector(".agent-sidebar-cell-text");
           const rawTitle = titleEl
-            ? (titleEl.textContent || '').trim()
-            : (tab.getAttribute('aria-label') || tab.textContent || '').trim();
+            ? (titleEl.textContent || "").trim()
+            : (tab.getAttribute("aria-label") || tab.textContent || "").trim();
           const title = cleanTabTitle(rawTitle);
           if (!title || seenTitles.has(title)) continue;
           seenTitles.add(title);
 
-          const composerId = tab.getAttribute('data-composer-id')
-            || tab.closest('[data-composer-id]')?.getAttribute('data-composer-id')
-            || `tab-${chatTabs.length}`;
-          const selectedAttr = tab.getAttribute('data-selected');
-          const highlightedAttr = tab.getAttribute('data-highlighted');
-          const isActive = selectedAttr === 'true'
-            || highlightedAttr === 'true'
-            || tab.classList.contains('selected')
-            || tab.classList.contains('active');
+          const composerId =
+            tab.getAttribute("data-composer-id") ||
+            tab
+              .closest("[data-composer-id]")
+              ?.getAttribute("data-composer-id") ||
+            `tab-${chatTabs.length}`;
+          const selectedAttr = tab.getAttribute("data-selected");
+          const highlightedAttr = tab.getAttribute("data-highlighted");
+          const isActive =
+            selectedAttr === "true" ||
+            highlightedAttr === "true" ||
+            tab.classList.contains("selected") ||
+            tab.classList.contains("active");
 
           chatTabs.push({
             composerId,
             title,
             isActive,
-            status: isActive ? 'active' : 'idle',
+            status: isActive ? "active" : "idle",
             selectorPath: buildSelectorPath(tab),
           });
         }
@@ -1474,7 +1992,7 @@ export function extractionFunction(
               if (match) {
                 matched = true;
                 t.isActive = true;
-                t.status = 'active';
+                t.status = "active";
               }
             }
             if (matched) {
@@ -1482,7 +2000,7 @@ export function extractionFunction(
               for (const t of chatTabs) {
                 if (t.composerId !== containerComposerId) {
                   t.isActive = false;
-                  t.status = 'idle';
+                  t.status = "idle";
                 }
               }
             }
@@ -1492,21 +2010,23 @@ export function extractionFunction(
           break;
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      /* skip */
+    }
 
     // --- Mode extraction ---
     const modeEl = findFirst(modeSelectors);
-    let currentMode = 'agent';
+    let currentMode = "agent";
     if (modeEl) {
-      currentMode = modeEl.getAttribute('data-mode') || 'agent';
+      currentMode = modeEl.getAttribute("data-mode") || "agent";
     }
     const mode: ModeInfo = {
       current: currentMode,
       available: [
-        { id: 'agent', label: 'Agent', icon: 'infinity' },
-        { id: 'plan', label: 'Plan', icon: 'todos' },
-        { id: 'debug', label: 'Debug', icon: 'bug' },
-        { id: 'chat', label: 'Ask', icon: 'chat' },
+        { id: "agent", label: "Agent", icon: "infinity" },
+        { id: "plan", label: "Plan", icon: "todos" },
+        { id: "debug", label: "Debug", icon: "bug" },
+        { id: "chat", label: "Ask", icon: "chat" },
       ],
     };
 
@@ -1518,103 +2038,153 @@ export function extractionFunction(
       try {
         const candidates = document.querySelectorAll(sel);
         for (const c of Array.from(candidates)) {
-          const cId = c.getAttribute('id') || '';
-          if (!cId.startsWith('plan-exec-model')) {
+          const cId = c.getAttribute("id") || "";
+          if (!cId.startsWith("plan-exec-model")) {
             modelEl = c;
             break;
           }
         }
         if (modelEl) break;
-      } catch { /* skip */ }
+      } catch {
+        /* skip */
+      }
     }
-    let modelName = '';
-    let modelId = '';
+    let modelName = "";
+    let modelId = "";
     if (modelEl) {
-      const spans = modelEl.querySelectorAll('span');
+      const spans = modelEl.querySelectorAll("span");
       for (const s of Array.from(spans)) {
-        const t = (s.textContent || '').trim();
-        if (t && !t.includes('chevron') && t.length > 1) {
+        const t = (s.textContent || "").trim();
+        if (t && !t.includes("chevron") && t.length > 1) {
           modelName = t;
           break;
         }
       }
-      modelId = modelEl.getAttribute('id') || '';
+      modelId = modelEl.getAttribute("id") || "";
     }
     const model: ModelInfo = {
-      current: modelName || 'Auto',
+      current: modelName || "Auto",
       currentId: modelId,
     };
 
     // --- Raw activity signals (objective DOM snapshot for recording) ---
-    const _shimmer: Array<{ text: string; inToolCall: boolean; inHeader: boolean }> = [];
-    const hasLoadingIndicator = container.querySelector('.loading-indicator-v3') !== null;
-    const hasLoadingTool = container.querySelector('[data-tool-status="loading"]') !== null;
-    const shineEls = container.querySelectorAll('.make-shine');
+    const _shimmer: Array<{
+      text: string;
+      inToolCall: boolean;
+      inHeader: boolean;
+    }> = [];
+    const hasLoadingIndicator =
+      container.querySelector(".loading-indicator-v3") !== null;
+    const hasLoadingTool =
+      container.querySelector('[data-tool-status="loading"]') !== null;
+    const shineEls = container.querySelectorAll(".make-shine");
     for (const sh of Array.from(shineEls).reverse()) {
-      const inToolCall = !!sh.closest('[data-tool-call-id]') || !!sh.closest('.composer-terminal-tool');
-      const header = sh.closest('.ui-collapsible-header');
-      let text = '';
+      const inToolCall =
+        !!sh.closest("[data-tool-call-id]") ||
+        !!sh.closest(".composer-terminal-tool");
+      const header = sh.closest(".ui-collapsible-header");
+      let text = "";
       if (header) {
-        const spans = header.querySelectorAll(':scope > span');
+        const spans = header.querySelectorAll(":scope > span");
         const parts: string[] = [];
         for (const s of Array.from(spans)) {
-          if (s.classList.contains('cursor-icon') || s.classList.contains('ui-icon')) continue;
-          const t = (s.textContent || '').trim();
+          if (
+            s.classList.contains("cursor-icon") ||
+            s.classList.contains("ui-icon")
+          )
+            continue;
+          const t = (s.textContent || "").trim();
           if (t) parts.push(t);
         }
-        text = parts.join(' ');
-      } else if (sh.classList.contains('composer-terminal-top-header-description') ||
-                 sh.closest('.composer-terminal-top-header-text')) {
-        text = (sh.textContent || '').trim();
+        text = parts.join(" ");
+      } else if (
+        sh.classList.contains("composer-terminal-top-header-description") ||
+        sh.closest(".composer-terminal-top-header-text")
+      ) {
+        text = (sh.textContent || "").trim();
       } else {
-        const descEl = (sh.closest('[data-flat-index]') || sh.parentElement)
-          ?.querySelector('.composer-terminal-top-header-description, .ui-tool-call-line-action, .ui-edit-tool-call__filename');
-        text = descEl ? (descEl.textContent || '').trim() : (sh.textContent || '').trim();
+        const descEl = (
+          sh.closest("[data-flat-index]") || sh.parentElement
+        )?.querySelector(
+          ".composer-terminal-top-header-description, .ui-tool-call-line-action, .ui-edit-tool-call__filename",
+        );
+        text = descEl
+          ? (descEl.textContent || "").trim()
+          : (sh.textContent || "").trim();
       }
       if (text.length > 2) {
-        const entry = { text: text.substring(0, 80), inToolCall, inHeader: !!header };
+        const entry = {
+          text: text.substring(0, 80),
+          inToolCall,
+          inHeader: !!header,
+        };
         _shimmer.push(entry);
       }
     }
 
     const _rawSignals = {
+      virtualized: usingVirtualizedRows,
+      messageWrapperCount: messageWrappers.length,
       shimmer: _shimmer,
       loadingIndicator: hasLoadingIndicator,
-      statusEl: statusEl ? { text: (statusEl.textContent || '').trim(), classes: statusEl.className } : undefined,
+      statusEl: statusEl
+        ? {
+            text: (statusEl.textContent || "").trim(),
+            classes: statusEl.className,
+          }
+        : undefined,
       elements: _rawElements,
       orphanIndicators: _orphanIndicators,
     };
 
     const queueItems: { id: string; text: string }[] = [];
     let queueLabel: string | undefined;
-    const toolbarSection = document.querySelector('#composer-toolbar-section');
+    const toolbarSection = document.querySelector("#composer-toolbar-section");
     if (toolbarSection) {
-      for (const lc of Array.from(toolbarSection.querySelectorAll('.opacity-80'))) {
-        const lt = (lc.textContent || '').trim();
+      for (const lc of Array.from(
+        toolbarSection.querySelectorAll(".opacity-80"),
+      )) {
+        const lt = (lc.textContent || "").trim();
         if (lt && /queued/i.test(lt)) {
           queueLabel = lt;
           break;
         }
       }
       if (!queueLabel) {
-        const fb = toolbarSection.querySelector('.group .opacity-80');
-        const t0 = (fb?.textContent || '').trim();
+        const fb = toolbarSection.querySelector(".group .opacity-80");
+        const t0 = (fb?.textContent || "").trim();
         if (t0) queueLabel = t0;
       }
-      for (const item of Array.from(toolbarSection.querySelectorAll('.composer-toolbar-queue-item'))) {
-        const qid = item.getAttribute('data-queue-item-id') || '';
-        let qtext = (item.getAttribute('data-queue-item-query') || '').trim();
+      for (const item of Array.from(
+        toolbarSection.querySelectorAll(".composer-toolbar-queue-item"),
+      )) {
+        const qid = item.getAttribute("data-queue-item-id") || "";
+        let qtext = (item.getAttribute("data-queue-item-query") || "").trim();
         if (!qtext) {
-          const ro = item.querySelector('.aislash-editor-input-readonly');
-          qtext = (ro?.textContent || '').trim();
+          const ro = item.querySelector(".aislash-editor-input-readonly");
+          qtext = (ro?.textContent || "").trim();
         }
-        if (qid || qtext) queueItems.push({ id: qid || `qi-${queueItems.length}`, text: qtext });
+        if (qid || qtext)
+          queueItems.push({
+            id: qid || `qi-${queueItems.length}`,
+            text: qtext,
+          });
       }
     }
 
     // --- Questionnaire widget ---
-    type QOption = { letter: string; label: string; isFreeform: boolean; selectorPath: string };
-    type QQuestion = { number: string; text: string; options: QOption[]; isActive: boolean };
+    type QOption = {
+      letter: string;
+      label: string;
+      isFreeform: boolean;
+      selectorPath: string;
+    };
+    type QQuestion = {
+      number: string;
+      text: string;
+      options: QOption[];
+      isActive: boolean;
+    };
     let questionnaire: {
       questions: QQuestion[];
       activeIndex: number;
@@ -1623,43 +2193,72 @@ export function extractionFunction(
       continueSelectorPath: string;
       continueDisabled: boolean;
     } | null = null;
-    const qToolbar = document.querySelector('.composer-questionnaire-toolbar');
+    const qToolbar = document.querySelector(".composer-questionnaire-toolbar");
     if (qToolbar) {
-      const stepperLabel = (qToolbar.querySelector('.composer-questionnaire-toolbar-stepper-label')?.textContent || '').trim();
-      const questionEls = Array.from(qToolbar.querySelectorAll('.composer-questionnaire-toolbar-question'));
+      const stepperLabel = (
+        qToolbar.querySelector(".composer-questionnaire-toolbar-stepper-label")
+          ?.textContent || ""
+      ).trim();
+      const questionEls = Array.from(
+        qToolbar.querySelectorAll(".composer-questionnaire-toolbar-question"),
+      );
       const questions: QQuestion[] = [];
       let activeIdx = 0;
       for (let qi = 0; qi < questionEls.length; qi++) {
         const qEl = questionEls[qi];
-        const isActive = qEl.classList.contains('composer-questionnaire-toolbar-question-active');
+        const isActive = qEl.classList.contains(
+          "composer-questionnaire-toolbar-question-active",
+        );
         if (isActive) activeIdx = qi;
-        const num = (qEl.querySelector('.composer-questionnaire-toolbar-question-number')?.textContent || '').trim();
-        const mdRoot = qEl.querySelector('.markdown-root');
-        const text = (mdRoot?.textContent || '').trim();
-        const optionEls = Array.from(qEl.querySelectorAll('.composer-questionnaire-toolbar-option'));
+        const num = (
+          qEl.querySelector(".composer-questionnaire-toolbar-question-number")
+            ?.textContent || ""
+        ).trim();
+        const mdRoot = qEl.querySelector(".markdown-root");
+        const text = (mdRoot?.textContent || "").trim();
+        const optionEls = Array.from(
+          qEl.querySelectorAll(".composer-questionnaire-toolbar-option"),
+        );
         const options: QOption[] = [];
         for (const optEl of optionEls) {
-          const letterBtn = optEl.querySelector('.composer-questionnaire-toolbar-option-letter');
-          const letter = (letterBtn?.textContent || '').trim();
-          const isFreeform = optEl.classList.contains('composer-questionnaire-toolbar-option-freeform');
-          const label = isFreeform ? 'Other' : (optEl.querySelector('.composer-questionnaire-toolbar-option-label')?.textContent || '').trim();
+          const letterBtn = optEl.querySelector(
+            ".composer-questionnaire-toolbar-option-letter",
+          );
+          const letter = (letterBtn?.textContent || "").trim();
+          const isFreeform = optEl.classList.contains(
+            "composer-questionnaire-toolbar-option-freeform",
+          );
+          const label = isFreeform
+            ? "Other"
+            : (
+                optEl.querySelector(
+                  ".composer-questionnaire-toolbar-option-label",
+                )?.textContent || ""
+              ).trim();
           const clickTarget = letterBtn || optEl;
-          options.push({ letter, label, isFreeform, selectorPath: buildSelectorPath(clickTarget as Element) });
+          options.push({
+            letter,
+            label,
+            isFreeform,
+            selectorPath: buildSelectorPath(clickTarget as Element),
+          });
         }
         questions.push({ number: num, text, options, isActive });
       }
 
-      let skipPath = '';
-      let continuePath = '';
+      let skipPath = "";
+      let continuePath = "";
       let continueDisabled = false;
-      const actionsContainer = qToolbar.querySelector('.composer-questionnaire-toolbar-actions');
+      const actionsContainer = qToolbar.querySelector(
+        ".composer-questionnaire-toolbar-actions",
+      );
       if (actionsContainer) {
-        const skipBtn = actionsContainer.querySelector('.composer-skip-button');
+        const skipBtn = actionsContainer.querySelector(".composer-skip-button");
         if (skipBtn) skipPath = buildSelectorPath(skipBtn as Element);
-        const contBtn = actionsContainer.querySelector('.composer-run-button');
+        const contBtn = actionsContainer.querySelector(".composer-run-button");
         if (contBtn) {
           continuePath = buildSelectorPath(contBtn as Element);
-          continueDisabled = contBtn.getAttribute('data-disabled') === 'true';
+          continueDisabled = contBtn.getAttribute("data-disabled") === "true";
         }
       }
 
@@ -1675,24 +2274,29 @@ export function extractionFunction(
 
     return {
       connected: true,
-      extractorStatus: 'ok',
+      extractorStatus: "ok",
       lastExtractionAt: null,
       consecutiveExtractionFailures: 0,
       lastExtractionError: null,
       agentStatus,
       agentActivityText: null,
       agentActivityLive: false,
-      agentActivitySource: 'none',
+      agentActivitySource: "none",
       messages: elements,
       pendingApprovals,
       inputAvailable: inputEl !== null,
       chatTabs,
-      activeComposerId: containerComposerId || (chatTabs.find((t) => t.isActive)?.composerId ?? ''),
+      activeComposerId:
+        containerComposerId ||
+        (chatTabs.find((t) => t.isActive)?.composerId ?? ""),
       mode,
       model,
       windows: [],
-      activeWindowId: '',
-      composerQueue: { items: queueItems, ...(queueLabel ? { queueLabel } : {}) },
+      activeWindowId: "",
+      composerQueue: {
+        items: queueItems,
+        ...(queueLabel ? { queueLabel } : {}),
+      },
       questionnaire,
       _rawSignals,
     };
@@ -1705,7 +2309,10 @@ export class DOMExtractor {
   private selectors: SelectorConfig;
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private client: CdpClient | null = null;
-  private onExtract: (state: CursorState | null, errorMessage?: string | null) => void;
+  private onExtract: (
+    state: CursorState | null,
+    errorMessage?: string | null,
+  ) => void;
   private getWindowTitle: () => string;
   private loggedFirstExtraction = false;
   private basePollIntervalMs = 300;
@@ -1716,8 +2323,11 @@ export class DOMExtractor {
 
   constructor(
     selectors: SelectorConfig,
-    onExtract: (state: CursorState | null, errorMessage?: string | null) => void,
-    getWindowTitle: () => string = () => ''
+    onExtract: (
+      state: CursorState | null,
+      errorMessage?: string | null,
+    ) => void,
+    getWindowTitle: () => string = () => "",
   ) {
     this.selectors = selectors;
     this.onExtract = onExtract;
@@ -1761,16 +2371,21 @@ export class DOMExtractor {
   }
 
   private handleFailure(message: string): void {
-    const timedOut = message.includes('timeout');
+    const timedOut = message.includes("timeout");
     this.failureStreak++;
     if (timedOut) {
       const nextInterval = Math.min(
-        Math.max(this.basePollIntervalMs, this.basePollIntervalMs * (2 ** (this.failureStreak - 1))),
-        MAX_POLL_BACKOFF_MS
+        Math.max(
+          this.basePollIntervalMs,
+          this.basePollIntervalMs * 2 ** (this.failureStreak - 1),
+        ),
+        MAX_POLL_BACKOFF_MS,
       );
       if (nextInterval !== this.currentPollIntervalMs) {
         this.currentPollIntervalMs = nextInterval;
-        console.warn(`[dom-extractor] Backing off poll interval to ${this.currentPollIntervalMs}ms after ${message}`);
+        console.warn(
+          `[dom-extractor] Backing off poll interval to ${this.currentPollIntervalMs}ms after ${message}`,
+        );
       }
     }
     this.onExtract(null, message);
@@ -1784,15 +2399,15 @@ export class DOMExtractor {
     this.pollInFlight = true;
 
     if (!this.client || !this.client.isConnected()) {
-      this.handleFailure('CDP client not connected');
+      this.handleFailure("CDP client not connected");
       this.pollInFlight = false;
       this.scheduleNextPoll();
       return;
     }
 
     try {
-      const state = await this.client.callFunctionWithTimeout(
-        extractionFunction as (...args: never[]) => unknown,
+      const state = (await this.client.callFunctionFromSource(
+        loadExtractionFunctionSource(),
         [
           this.selectors.chatContainer.strategies,
           this.selectors.approveButton.strategies,
@@ -1806,8 +2421,8 @@ export class DOMExtractor {
           this.selectors.modelDropdown?.strategies ?? [],
           this.getWindowTitle(),
         ],
-        EVALUATE_TIMEOUT_MS
-      ) as CursorState | null;
+        EVALUATE_TIMEOUT_MS,
+      )) as CursorState | null;
 
       const derivedState = state ? applyDerivedActivityToState(state) : null;
       this.failureStreak = 0;
@@ -1816,30 +2431,50 @@ export class DOMExtractor {
       if (derivedState && !this.loggedFirstExtraction) {
         this.loggedFirstExtraction = true;
         console.log(`[dom-extractor] First successful extraction:`);
-        console.log(`  status: ${derivedState.agentStatus}${derivedState.agentActivityText ? ` (${derivedState.agentActivityText})` : ''}`);
+        console.log(
+          `  status: ${derivedState.agentStatus}${derivedState.agentActivityText ? ` (${derivedState.agentActivityText})` : ""}`,
+        );
         console.log(`  messages: ${derivedState.messages.length}`);
+        console.log(
+          `  virtualized: ${derivedState._rawSignals?.virtualized === true ? "yes" : "no"} (wrappers: ${derivedState._rawSignals?.messageWrapperCount ?? "?"})`,
+        );
         console.log(`  approvals: ${derivedState.pendingApprovals.length}`);
         console.log(`  inputAvailable: ${derivedState.inputAvailable}`);
         console.log(`  chatTabs: ${derivedState.chatTabs.length}`);
-        console.log(`  mode: ${derivedState.mode.current}, model: ${derivedState.model.current}`);
+        console.log(
+          `  mode: ${derivedState.mode.current}, model: ${derivedState.model.current}`,
+        );
         if (derivedState.messages.length > 0) {
           const last = derivedState.messages[derivedState.messages.length - 1];
-          const preview = last.type === 'human' ? last.text
-            : last.type === 'assistant' ? last.text
-            : last.type === 'tool' ? `${last.action} ${last.details}`
-            : last.type === 'thought' ? `thought ${last.duration}`
-            : last.type === 'plan' ? `${last.label}: ${last.title}`
-            : last.type === 'run_command' ? `run: ${last.command.substring(0, 60)}`
-            : last.type === 'todo_list' ? `todos: ${last.todosCompleted}/${last.todosTotal}`
-            : 'loading';
-          console.log(`  last element (${last.type}): "${preview.substring(0, 80)}..."`);
+          const preview =
+            last.type === "human"
+              ? last.text
+              : last.type === "assistant"
+                ? last.text
+                : last.type === "tool"
+                  ? `${last.action} ${last.details}`
+                  : last.type === "thought"
+                    ? `thought ${last.duration}`
+                    : last.type === "plan"
+                      ? `${last.label}: ${last.title}`
+                      : last.type === "run_command"
+                        ? `run: ${last.command.substring(0, 60)}`
+                        : last.type === "todo_list"
+                          ? `todos: ${last.todosCompleted}/${last.todosTotal}`
+                          : "loading";
+          console.log(
+            `  last element (${last.type}): "${preview.substring(0, 80)}..."`,
+          );
         }
       }
 
       this.onExtract(derivedState, null);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      if (!message.includes('WebSocket closed') && !message.includes('Intentional disconnect')) {
+      if (
+        !message.includes("WebSocket closed") &&
+        !message.includes("Intentional disconnect")
+      ) {
         console.warn(`[dom-extractor] Extraction failed: ${message}`);
       }
       this.handleFailure(message);

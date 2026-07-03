@@ -1,21 +1,27 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server as SocketServer, type Socket } from 'socket.io';
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
-import { randomBytes, timingSafeEqual } from 'crypto';
-import { readFileSync } from 'fs';
-import type { ServerConfig, CursorState, CommandPayload, CommandResult } from './types.js';
-import type { StateManager } from './state-manager.js';
-import type { CommandExecutor } from './command-executor.js';
-import type { CDPBridge } from './cdp-bridge.js';
-import { markdownToWebHtml, readPlanFile } from './plan-files.js';
+import { randomBytes, timingSafeEqual } from "crypto";
+import express from "express";
+import { readFileSync } from "fs";
+import { createServer } from "http";
+import { dirname, join } from "path";
+import { Server as SocketServer, type Socket } from "socket.io";
+import { fileURLToPath } from "url";
+import type { CDPBridge } from "./cdp-bridge.js";
+import type { CommandExecutor } from "./command-executor.js";
+import { markdownToWebHtml, readPlanFile } from "./plan-files.js";
+import type { StateManager } from "./state-manager.js";
+import type {
+  CommandPayload,
+  CommandResult,
+  CursorState,
+  ServerConfig,
+} from "./types.js";
 import {
   WEBAPP_SESSION_COOKIE,
   createWebappSessionStore,
   parseSessionCookie,
   type WebappSessionStore,
-} from './webapp-sessions.js';
+} from "./webapp-sessions.js";
+import type { WindowMonitor } from "./window-monitor.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -115,6 +121,7 @@ export class Relay {
   private stateManager: StateManager;
   private commandExecutor: CommandExecutor;
   private cdpBridge: CDPBridge;
+  private windowMonitor: WindowMonitor | null;
 
   private sessionStore: WebappSessionStore;
   private loginAttempts = new Map<string, RateLimitEntry>();
@@ -130,12 +137,14 @@ export class Relay {
     config: ServerConfig,
     stateManager: StateManager,
     commandExecutor: CommandExecutor,
-    cdpBridge: CDPBridge
+    cdpBridge: CDPBridge,
+    windowMonitor?: WindowMonitor,
   ) {
     this.config = config;
     this.stateManager = stateManager;
     this.commandExecutor = commandExecutor;
     this.cdpBridge = cdpBridge;
+    this.windowMonitor = windowMonitor ?? null;
     this.sessionStore = createWebappSessionStore(config.dataDir);
 
     this.app = express();
@@ -144,7 +153,7 @@ export class Relay {
       serveClient: false,
       cors: {
         origin: true,
-        methods: ['GET', 'POST'],
+        methods: ["GET", "POST"],
         credentials: true,
       },
     });
@@ -154,18 +163,22 @@ export class Relay {
     this.setupStateForwarding();
 
     if (this.authEnabled) {
-      console.log('[relay] Web app password protection enabled');
+      console.log("[relay] Web app password protection enabled");
     }
   }
 
   start(): Promise<void> {
     return new Promise((resolve) => {
-      this.httpServer.listen(this.config.serverPort, this.config.serverHost, () => {
-        console.log(
-          `[relay] Server listening on http://${this.config.serverHost}:${this.config.serverPort}`
-        );
-        resolve();
-      });
+      this.httpServer.listen(
+        this.config.serverPort,
+        this.config.serverHost,
+        () => {
+          console.log(
+            `[relay] Server listening on http://${this.config.serverHost}:${this.config.serverPort}`,
+          );
+          resolve();
+        },
+      );
     });
   }
 
@@ -177,9 +190,9 @@ export class Relay {
   }
 
   private getClientIp(req: express.Request): string {
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string') return forwarded.split(',')[0].trim();
-    return req.socket.remoteAddress ?? 'unknown';
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string") return forwarded.split(",")[0].trim();
+    return req.socket.remoteAddress ?? "unknown";
   }
 
   private checkRateLimit(ip: string): { allowed: boolean; retryAfter: number } {
@@ -204,11 +217,14 @@ export class Relay {
   private resolveHttpSession(req: express.Request): string | undefined {
     if (!this.authEnabled) return undefined;
     const authHeader = req.headers.authorization;
-    if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
       const t = authHeader.slice(7).trim();
       if (this.sessionStore.has(t)) return t;
     }
-    const fromCookie = parseSessionCookie(req.headers.cookie, WEBAPP_SESSION_COOKIE);
+    const fromCookie = parseSessionCookie(
+      req.headers.cookie,
+      WEBAPP_SESSION_COOKIE,
+    );
     if (fromCookie && this.sessionStore.has(fromCookie)) return fromCookie;
     return undefined;
   }
@@ -216,69 +232,75 @@ export class Relay {
   private resolveSocketSession(socket: Socket): string | undefined {
     if (!this.authEnabled) return undefined;
     const raw = socket.handshake.auth?.token;
-    const bearer = typeof raw === 'string' ? raw.trim() : '';
+    const bearer = typeof raw === "string" ? raw.trim() : "";
     if (bearer && this.sessionStore.has(bearer)) return bearer;
     const cookieHeader = socket.handshake.headers.cookie;
     const fromCookie = parseSessionCookie(
-      typeof cookieHeader === 'string' ? cookieHeader : undefined,
-      WEBAPP_SESSION_COOKIE
+      typeof cookieHeader === "string" ? cookieHeader : undefined,
+      WEBAPP_SESSION_COOKIE,
     );
     if (fromCookie && this.sessionStore.has(fromCookie)) return fromCookie;
     return undefined;
   }
 
   private setupRoutes(): void {
-    const clientDir = join(__dirname, '..', 'client');
+    const clientDir = join(__dirname, "..", "client");
 
     this.app.use(express.json());
 
-    this.app.get('/login', (_req, res) => {
-      if (!this.authEnabled) return res.redirect('/');
-      res.type('html').send(LOGIN_PAGE_HTML);
+    this.app.get("/login", (_req, res) => {
+      if (!this.authEnabled) return res.redirect("/");
+      res.type("html").send(LOGIN_PAGE_HTML);
     });
 
-    this.app.post('/api/login', (req, res) => {
-      if (!this.authEnabled) return res.json({ token: 'no-auth' });
+    this.app.post("/api/login", (req, res) => {
+      if (!this.authEnabled) return res.json({ token: "no-auth" });
 
       const ip = this.getClientIp(req);
       const { allowed, retryAfter } = this.checkRateLimit(ip);
       if (!allowed) {
         console.warn(`[relay] Rate limited login from ${ip}`);
-        res.set('Retry-After', String(retryAfter));
-        return res.status(429).json({ error: `Too many attempts. Retry in ${retryAfter}s.` });
+        res.set("Retry-After", String(retryAfter));
+        return res
+          .status(429)
+          .json({ error: `Too many attempts. Retry in ${retryAfter}s.` });
       }
 
       const password = req.body?.password;
-      if (typeof password !== 'string' || password.length === 0) {
-        return res.status(400).json({ error: 'Password required' });
+      if (typeof password !== "string" || password.length === 0) {
+        return res.status(400).json({ error: "Password required" });
       }
 
       const expected = Buffer.from(this.config.webappPassword);
       const received = Buffer.from(password);
-      if (expected.length !== received.length || !timingSafeEqual(expected, received)) {
+      if (
+        expected.length !== received.length ||
+        !timingSafeEqual(expected, received)
+      ) {
         console.warn(`[relay] Failed login attempt from ${ip}`);
-        return res.status(401).json({ error: 'Invalid password' });
+        return res.status(401).json({ error: "Invalid password" });
       }
 
-      const token = randomBytes(32).toString('hex');
+      const token = randomBytes(32).toString("hex");
       this.sessionStore.add(token);
       console.log(`[relay] Successful login from ${ip}`);
       res.setHeader(
-        'Set-Cookie',
+        "Set-Cookie",
         [
           `${WEBAPP_SESSION_COOKIE}=${token}`,
-          'HttpOnly',
-          'Path=/',
-          'SameSite=Lax',
+          "HttpOnly",
+          "Path=/",
+          "SameSite=Lax",
           `Max-Age=${Relay.SESSION_COOKIE_MAX_AGE_SEC}`,
-        ].join('; ')
+        ].join("; "),
       );
       return res.json({ token });
     });
 
-    this.app.get('/health', (req, res) => {
+    this.app.get("/health", (req, res) => {
       const state = this.stateManager.getCurrentState();
-      const sessionOk = !this.authEnabled || this.resolveHttpSession(req) !== undefined;
+      const sessionOk =
+        !this.authEnabled || this.resolveHttpSession(req) !== undefined;
       res.json({
         ok: true,
         authRequired: this.authEnabled,
@@ -301,9 +323,9 @@ export class Relay {
       });
     });
 
-    this.app.get('/debug/state', (req, res) => {
+    this.app.get("/debug/state", (req, res) => {
       if (this.authEnabled && this.resolveHttpSession(req) === undefined) {
-        res.status(401).json({ error: 'unauthorized' });
+        res.status(401).json({ error: "unauthorized" });
         return;
       }
       const state = this.stateManager.getCurrentState();
@@ -318,50 +340,60 @@ export class Relay {
           title: t.title,
           composerId: t.composerId.substring(0, 16),
         })),
-        windows: state.windows.map((w) => ({ id: w.id.substring(0, 8), title: w.title })),
+        windows: state.windows.map((w) => ({
+          id: w.id.substring(0, 8),
+          title: w.title,
+        })),
         messageCount: state.messages.length,
         lastMessages: state.messages.slice(-3).map((m) => ({
           type: m.type,
           flatIndex: m.flatIndex,
-          ...(m.type === 'tool' || m.type === 'run_command' ? {
-            actions: 'actions' in m ? m.actions?.length ?? 0 : 0,
-          } : {}),
+          ...(m.type === "tool" || m.type === "run_command"
+            ? {
+                actions: "actions" in m ? (m.actions?.length ?? 0) : 0,
+              }
+            : {}),
         })),
         generation: this.stateManager.generation,
       });
     });
 
     const cacheBust = Date.now().toString(36);
-    this.app.get('/', (_req, res) => {
-      const htmlPath = join(clientDir, 'index.html');
+    this.app.get("/", (_req, res) => {
+      const htmlPath = join(clientDir, "index.html");
       try {
-        let html = readFileSync(htmlPath, 'utf-8');
-        html = html.replace(/(src|href)="([^"]+)\.(js|css)"/g, `$1="$2.$3?v=${cacheBust}"`);
-        res.setHeader('Cache-Control', 'no-store');
-        res.type('html').send(html);
+        let html = readFileSync(htmlPath, "utf-8");
+        html = html.replace(
+          /(src|href)="([^"]+)\.(js|css)"/g,
+          `$1="$2.$3?v=${cacheBust}"`,
+        );
+        res.setHeader("Cache-Control", "no-store");
+        res.type("html").send(html);
       } catch (err) {
         console.error(`[relay] Failed to serve index.html: ${err}`);
-        res.status(500).send('Client files not found');
+        res.status(500).send("Client files not found");
       }
     });
 
-    this.app.use(express.static(clientDir, {
-      etag: true,
-      lastModified: true,
-      setHeaders: (res) => {
-        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-      },
-    }));
+    this.app.use(
+      express.static(clientDir, {
+        etag: true,
+        lastModified: true,
+        setHeaders: (res) => {
+          res.setHeader("Cache-Control", "no-cache, must-revalidate");
+        },
+      }),
+    );
 
     const authMiddleware: express.RequestHandler = (req, res, next) => {
       if (!this.authEnabled) return next();
 
       if (this.resolveHttpSession(req)) return next();
 
-      if (req.path.startsWith('/api/')) {
-        return res.status(401).json({ error: 'Unauthorized' });
+      if (req.path.startsWith("/api/")) {
+        return res.status(401).json({ error: "Unauthorized" });
       }
-      return res.redirect('/login');
+      return res.redirect("/login");
     };
 
     this.app.use(authMiddleware);
@@ -374,193 +406,209 @@ export class Relay {
         if (resolved) return next();
         const raw = socket.handshake.auth?.token;
         const hint =
-          typeof raw === 'string' && raw.length > 0
-            ? raw.slice(0, 8) + '...'
+          typeof raw === "string" && raw.length > 0
+            ? raw.slice(0, 8) + "..."
             : parseSessionCookie(
-                typeof socket.handshake.headers.cookie === 'string'
-                  ? socket.handshake.headers.cookie
-                  : undefined,
-                WEBAPP_SESSION_COOKIE
-              )
-              ? 'cookie-present'
-              : 'empty';
-        console.warn(`[relay] Socket.io auth rejected (${socket.id}) — ${hint}`);
-        next(new Error('Unauthorized'));
+                  typeof socket.handshake.headers.cookie === "string"
+                    ? socket.handshake.headers.cookie
+                    : undefined,
+                  WEBAPP_SESSION_COOKIE,
+                )
+              ? "cookie-present"
+              : "empty";
+        console.warn(
+          `[relay] Socket.io auth rejected (${socket.id}) — ${hint}`,
+        );
+        next(new Error("Unauthorized"));
       });
     }
 
-    this.io.on('connection', (socket) => {
+    this.io.on("connection", (socket) => {
       console.log(`[relay] Client connected: ${socket.id}`);
 
-      socket.emit('state:full', this.stateManager.getCurrentState());
+      socket.emit("state:full", this.stateManager.getCurrentState());
 
-      socket.on('command:send_message', async (payload: CommandPayload) => {
+      socket.on("command:send_message", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.text) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or text',
+            error: "Missing commandId or text",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: send_message from ${socket.id}`);
         const result = await this.commandExecutor.sendMessage(
           payload.commandId,
-          payload.text
+          payload.text,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:approve', async (payload: CommandPayload) => {
+      socket.on("command:approve", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.selectorPath) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or selectorPath',
+            error: "Missing commandId or selectorPath",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: approve from ${socket.id}`);
         const result = await this.commandExecutor.clickApproval(
           payload.commandId,
-          payload.selectorPath
+          payload.selectorPath,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:approve_all', async (payload: CommandPayload) => {
+      socket.on("command:approve_all", async (payload: CommandPayload) => {
         if (!payload.commandId) {
-          socket.emit('command:result', {
-            commandId: 'unknown',
+          socket.emit("command:result", {
+            commandId: "unknown",
             ok: false,
-            error: 'Missing commandId',
+            error: "Missing commandId",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: approve_all from ${socket.id}`);
         const result = await this.commandExecutor.approveAll(payload.commandId);
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:reject', async (payload: CommandPayload) => {
+      socket.on("command:reject", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.selectorPath) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or selectorPath',
+            error: "Missing commandId or selectorPath",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: reject from ${socket.id}`);
         const result = await this.commandExecutor.reject(
           payload.commandId,
-          payload.selectorPath
+          payload.selectorPath,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:switch_tab', async (payload: CommandPayload) => {
-        if (!payload.commandId || (!payload.tabTitle && !payload.selectorPath)) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+      socket.on("command:switch_tab", async (payload: CommandPayload) => {
+        if (
+          !payload.commandId ||
+          (!payload.tabTitle && !payload.selectorPath)
+        ) {
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId and tab target',
+            error: "Missing commandId and tab target",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: switch_tab to "${payload.tabTitle ?? payload.selectorPath}" from ${socket.id}`);
+        console.log(
+          `[relay] Command: switch_tab to "${payload.tabTitle ?? payload.selectorPath}" from ${socket.id}`,
+        );
         const result = await this.commandExecutor.switchTab(
           payload.commandId,
-          payload.tabTitle ?? '',
-          payload.selectorPath
+          payload.tabTitle ?? "",
+          payload.selectorPath,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:new_chat', async (payload: CommandPayload) => {
+      socket.on("command:new_chat", async (payload: CommandPayload) => {
         if (!payload.commandId) {
-          socket.emit('command:result', {
-            commandId: 'unknown',
+          socket.emit("command:result", {
+            commandId: "unknown",
             ok: false,
-            error: 'Missing commandId',
+            error: "Missing commandId",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: new_chat from ${socket.id}`);
         const result = await this.commandExecutor.newChat(payload.commandId);
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:set_mode', async (payload: CommandPayload) => {
+      socket.on("command:set_mode", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.modeId) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or modeId',
+            error: "Missing commandId or modeId",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: set_mode to ${payload.modeId} from ${socket.id}`);
+        console.log(
+          `[relay] Command: set_mode to ${payload.modeId} from ${socket.id}`,
+        );
         const result = await this.commandExecutor.setMode(
           payload.commandId,
-          payload.modeId
+          payload.modeId,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:set_model', async (payload: CommandPayload) => {
+      socket.on("command:set_model", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.modelId) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or modelId',
+            error: "Missing commandId or modelId",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: set_model to ${payload.modelId} from ${socket.id}`);
+        console.log(
+          `[relay] Command: set_model to ${payload.modelId} from ${socket.id}`,
+        );
         const result = await this.commandExecutor.setModel(
           payload.commandId,
-          payload.modelId
+          payload.modelId,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:get_model_options', async (payload: CommandPayload) => {
-        if (!payload.commandId) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
-            ok: false,
-            error: 'Missing commandId',
-          } satisfies CommandResult);
-          return;
-        }
-        console.log(`[relay] Command: get_model_options from ${socket.id}`);
-        const result = await this.commandExecutor.getModelOptions(
-          payload.commandId
-        );
-        socket.emit('command:result', result);
-      });
+      socket.on(
+        "command:get_model_options",
+        async (payload: CommandPayload) => {
+          if (!payload.commandId) {
+            socket.emit("command:result", {
+              commandId: payload.commandId ?? "unknown",
+              ok: false,
+              error: "Missing commandId",
+            } satisfies CommandResult);
+            return;
+          }
+          console.log(`[relay] Command: get_model_options from ${socket.id}`);
+          const result = await this.commandExecutor.getModelOptions(
+            payload.commandId,
+          );
+          socket.emit("command:result", result);
+        },
+      );
 
-      socket.on('command:get_plan_full', async (payload: CommandPayload) => {
+      socket.on("command:get_plan_full", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.planLabel) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or planLabel',
+            error: "Missing commandId or planLabel",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: get_plan_full for ${payload.planLabel} from ${socket.id}`);
+        console.log(
+          `[relay] Command: get_plan_full for ${payload.planLabel} from ${socket.id}`,
+        );
         const planFile = readPlanFile(payload.planLabel);
         if (!planFile) {
-          socket.emit('command:result', {
+          socket.emit("command:result", {
             commandId: payload.commandId,
             ok: false,
-            error: 'Plan file not found',
+            error: "Plan file not found",
           } satisfies CommandResult);
           return;
         }
-        socket.emit('command:result', {
+        socket.emit("command:result", {
           commandId: payload.commandId,
           ok: true,
           data: {
@@ -571,90 +619,146 @@ export class Relay {
         } satisfies CommandResult);
       });
 
-      socket.on('command:get_plan_model_options', async (payload: CommandPayload) => {
-        if (!payload.commandId || !payload.selectorPath) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
-            ok: false,
-            error: 'Missing commandId or selectorPath',
-          } satisfies CommandResult);
-          return;
-        }
-        console.log(`[relay] Command: get_plan_model_options from ${socket.id}`);
-        const result = await this.commandExecutor.getPlanModelOptions(
-          payload.commandId,
-          payload.selectorPath
-        );
-        socket.emit('command:result', result);
-      });
+      socket.on(
+        "command:get_plan_model_options",
+        async (payload: CommandPayload) => {
+          if (!payload.commandId || !payload.selectorPath) {
+            socket.emit("command:result", {
+              commandId: payload.commandId ?? "unknown",
+              ok: false,
+              error: "Missing commandId or selectorPath",
+            } satisfies CommandResult);
+            return;
+          }
+          console.log(
+            `[relay] Command: get_plan_model_options from ${socket.id}`,
+          );
+          const result = await this.commandExecutor.getPlanModelOptions(
+            payload.commandId,
+            payload.selectorPath,
+          );
+          socket.emit("command:result", result);
+        },
+      );
 
-      socket.on('command:set_plan_model', async (payload: CommandPayload) => {
-        if (!payload.commandId || !payload.selectorPath || !payload.planModelId) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+      socket.on("command:set_plan_model", async (payload: CommandPayload) => {
+        if (
+          !payload.commandId ||
+          !payload.selectorPath ||
+          !payload.planModelId
+        ) {
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId, selectorPath, or planModelId',
+            error: "Missing commandId, selectorPath, or planModelId",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: set_plan_model to ${payload.planModelId} from ${socket.id}`);
+        console.log(
+          `[relay] Command: set_plan_model to ${payload.planModelId} from ${socket.id}`,
+        );
         const result = await this.commandExecutor.setPlanModel(
           payload.commandId,
           payload.selectorPath,
-          payload.planModelId
+          payload.planModelId,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:click_action', async (payload: CommandPayload) => {
+      socket.on("command:click_action", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.selectorPath) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or selectorPath',
+            error: "Missing commandId or selectorPath",
           } satisfies CommandResult);
           return;
         }
         console.log(`[relay] Command: click_action from ${socket.id}`);
         const result = await this.commandExecutor.clickAction(
           payload.commandId,
-          payload.selectorPath
+          payload.selectorPath,
         );
-        socket.emit('command:result', result);
+        socket.emit("command:result", result);
       });
 
-      socket.on('command:switch_window', async (payload: CommandPayload) => {
+      socket.on(
+        "command:scroll_to_message",
+        async (payload: CommandPayload) => {
+          if (!payload.commandId) {
+            socket.emit("command:result", {
+              commandId: "unknown",
+              ok: false,
+              error: "Missing commandId",
+            } satisfies CommandResult);
+            return;
+          }
+          const result =
+            payload.scrollTo === "bottom"
+              ? await this.commandExecutor.scrollChatToBottom(payload.commandId)
+              : typeof payload.messageId === "string"
+                ? await this.commandExecutor.scrollChatToMessage(
+                    payload.commandId,
+                    payload.messageId,
+                    typeof payload.scrollRatio === "number"
+                      ? payload.scrollRatio
+                      : 0,
+                  )
+                : {
+                    commandId: payload.commandId,
+                    ok: false,
+                    error: "Missing messageId or scrollTo",
+                  };
+          socket.emit("command:result", result);
+        },
+      );
+
+      socket.on("command:switch_window", async (payload: CommandPayload) => {
         if (!payload.commandId || !payload.windowId) {
-          socket.emit('command:result', {
-            commandId: payload.commandId ?? 'unknown',
+          socket.emit("command:result", {
+            commandId: payload.commandId ?? "unknown",
             ok: false,
-            error: 'Missing commandId or windowId',
+            error: "Missing commandId or windowId",
           } satisfies CommandResult);
           return;
         }
-        console.log(`[relay] Command: switch_window to ${payload.windowId} from ${socket.id}`);
+        console.log(
+          `[relay] Command: switch_window to ${payload.windowId} from ${socket.id}`,
+        );
         try {
+          this.windowMonitor?.setHomeWindow(payload.windowId);
+          const cached = this.windowMonitor?.getSnapshot(payload.windowId);
           await this.cdpBridge.switchWindow(payload.windowId);
-          socket.emit('command:result', { commandId: payload.commandId, ok: true });
+          if (cached) {
+            this.stateManager.applyWindowSnapshot(cached);
+          }
+          socket.emit("command:result", {
+            commandId: payload.commandId,
+            ok: true,
+          });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          socket.emit('command:result', { commandId: payload.commandId, ok: false, error: msg });
+          socket.emit("command:result", {
+            commandId: payload.commandId,
+            ok: false,
+            error: msg,
+          });
         }
       });
 
-      socket.on('disconnect', (reason) => {
+      socket.on("disconnect", (reason) => {
         console.log(`[relay] Client disconnected: ${socket.id} (${reason})`);
       });
     });
   }
 
   private setupStateForwarding(): void {
-    this.stateManager.on('state:patch', (patch: Partial<CursorState>) => {
-      this.io.emit('state:patch', patch);
+    this.stateManager.on("state:patch", (patch: Partial<CursorState>) => {
+      this.io.emit("state:patch", patch);
     });
 
-    this.stateManager.on('connection:changed', (connected: boolean) => {
-      this.io.emit('connection:status', { connected });
+    this.stateManager.on("connection:changed", (connected: boolean) => {
+      this.io.emit("connection:status", { connected });
     });
   }
 }

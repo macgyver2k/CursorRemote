@@ -1,5 +1,5 @@
-import { WebSocket } from 'ws';
-import { EventEmitter } from 'events';
+import { EventEmitter } from "events";
+import { WebSocket } from "ws";
 
 const DEFAULT_TIMEOUT_MS = 10000;
 
@@ -32,29 +32,29 @@ export class CdpClient extends EventEmitter {
     return new Promise((resolve, reject) => {
       this.ws = new WebSocket(wsUrl);
 
-      this.ws.on('open', () => {
+      this.ws.on("open", () => {
         this._connected = true;
         resolve();
       });
 
-      this.ws.on('error', (err) => {
+      this.ws.on("error", (err) => {
         if (!this._connected) {
           reject(err);
         } else {
-          console.error('[cdp-client] WebSocket error:', err.message);
+          console.error("[cdp-client] WebSocket error:", err.message);
         }
       });
 
-      this.ws.on('message', (data) => {
+      this.ws.on("message", (data) => {
         this.handleMessage(data.toString());
       });
 
-      this.ws.on('close', () => {
+      this.ws.on("close", () => {
         const wasConnected = this._connected;
         this._connected = false;
-        this.rejectAllPending('WebSocket closed');
+        this.rejectAllPending("WebSocket closed");
         if (wasConnected) {
-          this.emit('disconnected');
+          this.emit("disconnected");
         }
       });
     });
@@ -62,7 +62,7 @@ export class CdpClient extends EventEmitter {
 
   disconnect(): void {
     this._connected = false;
-    this.rejectAllPending('Intentional disconnect');
+    this.rejectAllPending("Intentional disconnect");
     if (this.ws) {
       this.ws.close();
       this.ws = null;
@@ -79,10 +79,10 @@ export class CdpClient extends EventEmitter {
   async send(
     method: string,
     params?: Record<string, unknown>,
-    timeoutMs = DEFAULT_TIMEOUT_MS
+    timeoutMs = DEFAULT_TIMEOUT_MS,
   ): Promise<Record<string, unknown>> {
     if (!this.ws || !this._connected) {
-      throw new Error('CDP client not connected');
+      throw new Error("CDP client not connected");
     }
 
     const id = this.nextId++;
@@ -101,20 +101,28 @@ export class CdpClient extends EventEmitter {
    * Evaluate a JavaScript expression in the page context.
    * Returns the deserialized value.
    */
-  async evaluate(expression: string, timeoutMs = DEFAULT_TIMEOUT_MS): Promise<unknown> {
-    const result = await this.send('Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    }, timeoutMs);
+  async evaluate(
+    expression: string,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+  ): Promise<unknown> {
+    const result = await this.send(
+      "Runtime.evaluate",
+      {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+      },
+      timeoutMs,
+    );
 
     const exceptionDetails = result.exceptionDetails as
       | { text?: string; exception?: { description?: string } }
       | undefined;
     if (exceptionDetails) {
-      const msg = exceptionDetails.exception?.description
-        ?? exceptionDetails.text
-        ?? 'Evaluation failed';
+      const msg =
+        exceptionDetails.exception?.description ??
+        exceptionDetails.text ??
+        "Evaluation failed";
       throw new Error(msg);
     }
 
@@ -133,8 +141,8 @@ export class CdpClient extends EventEmitter {
     fn: (...args: never[]) => unknown,
     ...args: unknown[]
   ): Promise<unknown> {
-    const argStr = args.map(a => JSON.stringify(a)).join(', ');
-    const shim = 'var __name = function(fn, _n){ return fn; };';
+    const argStr = args.map((a) => JSON.stringify(a)).join(", ");
+    const shim = "var __name = function(fn, _n){ return fn; };";
     const expression = `${shim}(${fn.toString()})(${argStr})`;
     return this.evaluate(expression);
   }
@@ -142,11 +150,19 @@ export class CdpClient extends EventEmitter {
   async callFunctionWithTimeout(
     fn: (...args: never[]) => unknown,
     args: unknown[],
-    timeoutMs: number
+    timeoutMs: number,
   ): Promise<unknown> {
-    const argStr = args.map(a => JSON.stringify(a)).join(', ');
-    const shim = 'var __name = function(fn, _n){ return fn; };';
-    const expression = `${shim}(${fn.toString()})(${argStr})`;
+    return this.callFunctionFromSource(fn.toString(), args, timeoutMs);
+  }
+
+  async callFunctionFromSource(
+    fnSource: string,
+    args: unknown[],
+    timeoutMs: number,
+  ): Promise<unknown> {
+    const argStr = args.map((a) => JSON.stringify(a)).join(", ");
+    const shim = "var __name = function(fn, _n){ return fn; };";
+    const expression = `${shim}(${fnSource})(${argStr})`;
     return this.evaluate(expression, timeoutMs);
   }
 
@@ -190,7 +206,7 @@ export class CdpClient extends EventEmitter {
    * Dispatch a key event (keyDown, keyUp, char) via the Input domain.
    */
   async dispatchKeyEvent(
-    type: 'keyDown' | 'keyUp' | 'char',
+    type: "keyDown" | "keyUp" | "char",
     options: {
       key?: string;
       code?: string;
@@ -199,16 +215,16 @@ export class CdpClient extends EventEmitter {
       windowsVirtualKeyCode?: number;
       nativeVirtualKeyCode?: number;
       modifiers?: number;
-    } = {}
+    } = {},
   ): Promise<void> {
-    await this.send('Input.dispatchKeyEvent', { type, ...options });
+    await this.send("Input.dispatchKeyEvent", { type, ...options });
   }
 
   /**
    * Insert text using Input.insertText — single CDP call, no double-character issues.
    */
   async typeText(text: string, _delayMs = 0): Promise<void> {
-    await this.send('Input.insertText', { text });
+    await this.send("Input.insertText", { text });
   }
 
   /**
@@ -218,16 +234,16 @@ export class CdpClient extends EventEmitter {
     key: string,
     code: string,
     keyCode: number,
-    modifiers = 0
+    modifiers = 0,
   ): Promise<void> {
-    await this.dispatchKeyEvent('keyDown', {
+    await this.dispatchKeyEvent("keyDown", {
       key,
       code,
       windowsVirtualKeyCode: keyCode,
       nativeVirtualKeyCode: keyCode,
       modifiers,
     });
-    await this.dispatchKeyEvent('keyUp', {
+    await this.dispatchKeyEvent("keyUp", {
       key,
       code,
       windowsVirtualKeyCode: keyCode,
@@ -240,18 +256,18 @@ export class CdpClient extends EventEmitter {
    * Click a viewport coordinate using native CDP mouse events.
    */
   async clickAtCoords(x: number, y: number): Promise<void> {
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mousePressed',
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mousePressed",
       x,
       y,
-      button: 'left',
+      button: "left",
       clickCount: 1,
     });
-    await this.send('Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
+    await this.send("Input.dispatchMouseEvent", {
+      type: "mouseReleased",
       x,
       y,
-      button: 'left',
+      button: "left",
       clickCount: 1,
     });
   }
@@ -261,7 +277,7 @@ export class CdpClient extends EventEmitter {
    */
   async exists(selector: string): Promise<boolean> {
     return (await this.evaluate(
-      `document.querySelector(${JSON.stringify(selector)}) !== null`
+      `document.querySelector(${JSON.stringify(selector)}) !== null`,
     )) as boolean;
   }
 
@@ -286,7 +302,7 @@ export class CdpClient extends EventEmitter {
     }
 
     if (msg.method) {
-      this.emit('event', msg.method, msg.params);
+      this.emit("event", msg.method, msg.params);
     }
   }
 
@@ -300,5 +316,5 @@ export class CdpClient extends EventEmitter {
 }
 
 function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }

@@ -23,6 +23,8 @@ export interface RawElement {
 }
 
 export interface RawSignals {
+  virtualized?: boolean;
+  messageWrapperCount?: number;
   shimmer: Array<{ text: string; inToolCall: boolean; inHeader: boolean }>;
   loadingIndicator: boolean;
   statusEl?: { text: string; classes: string };
@@ -120,22 +122,22 @@ export interface ModelInfo {
   currentId: string;
 }
 
-export type ExtractorStatus = 'idle' | 'waiting' | 'ok' | 'stale';
+export type ExtractorStatus = "idle" | "waiting" | "ok" | "stale";
 
 export type AgentStatus =
-  | 'idle'
-  | 'thinking'
-  | 'generating'
-  | 'running_tool'
-  | 'waiting_approval'
-  | 'error';
+  | "idle"
+  | "thinking"
+  | "generating"
+  | "running_tool"
+  | "waiting_approval"
+  | "error";
 
 export type ActivitySource =
-  | 'none'
-  | 'shimmer'
-  | 'loading_tool'
-  | 'loading_indicator'
-  | 'tail_thought';
+  | "none"
+  | "shimmer"
+  | "loading_tool"
+  | "loading_indicator"
+  | "tail_thought";
 
 export type ChatElement =
   | HumanMessage
@@ -148,7 +150,7 @@ export type ChatElement =
   | LoadingIndicator;
 
 export interface HumanMessage {
-  type: 'human';
+  type: "human";
   id: string;
   flatIndex: number;
   text: string;
@@ -157,11 +159,11 @@ export interface HumanMessage {
   quoted?: { text: string };
 }
 
-export type DiffLineKind = 'add' | 'rem' | 'ctx' | 'meta' | 'hunk';
+export type DiffLineKind = "add" | "rem" | "ctx" | "meta" | "hunk";
 
 /** Native web/Telegram rendering: structured code or diff (no mirrored Monaco HTML). */
 export interface CodeBlockItem {
-  blockKind: 'code' | 'diff';
+  blockKind: "code" | "diff";
   filename?: string;
   language?: string;
   /** Flat joined text (search, fallback, simple pre) */
@@ -171,7 +173,7 @@ export interface CodeBlockItem {
 }
 
 export interface AssistantMessage {
-  type: 'assistant';
+  type: "assistant";
   id: string;
   flatIndex: number;
   text: string;
@@ -180,11 +182,11 @@ export interface AssistantMessage {
 }
 
 export interface ToolCallElement {
-  type: 'tool';
+  type: "tool";
   id: string;
   flatIndex: number;
   toolCallId: string;
-  status: 'loading' | 'completed';
+  status: "loading" | "completed";
   action: string;
   details: string;
   filename?: string;
@@ -198,29 +200,29 @@ export interface ToolCallElement {
 }
 
 export interface ThoughtBlock {
-  type: 'thought';
+  type: "thought";
   id: string;
   flatIndex: number;
   duration: string;
   action?: string;
   detail?: string;
   /** Cursor step-group: umbrella row (e.g. Explored) vs inner thinking row */
-  thoughtKind?: 'step_summary' | 'thinking_step';
+  thoughtKind?: "step_summary" | "thinking_step";
 }
 
 export interface PlanTodo {
   text: string;
-  status: 'pending' | 'completed' | 'in_progress';
+  status: "pending" | "completed" | "in_progress";
 }
 
 export interface PlanAction {
   label: string;
-  type: 'view_plan' | 'build';
+  type: "view_plan" | "build";
   selectorPath: string;
 }
 
 export interface PlanBlock {
-  type: 'plan';
+  type: "plan";
   id: string;
   flatIndex: number;
   label: string;
@@ -252,7 +254,7 @@ export interface PlanFullData {
 }
 
 export interface TodoListBlock {
-  type: 'todo_list';
+  type: "todo_list";
   id: string;
   flatIndex: number;
   title: string;
@@ -263,12 +265,12 @@ export interface TodoListBlock {
 
 export interface RunAction {
   label: string;
-  type: 'run' | 'skip' | 'allow';
+  type: "run" | "skip" | "allow";
   selectorPath: string;
 }
 
 export interface RunCommand {
-  type: 'run_command';
+  type: "run_command";
   id: string;
   flatIndex: number;
   toolCallId: string;
@@ -279,7 +281,7 @@ export interface RunCommand {
 }
 
 export interface LoadingIndicator {
-  type: 'loading';
+  type: "loading";
   id: string;
   flatIndex: number;
   text?: string;
@@ -293,7 +295,7 @@ export interface Approval {
 
 export interface ApprovalAction {
   label: string;
-  type: 'approve' | 'reject' | 'approve_all';
+  type: "approve" | "reject" | "approve_all";
   selectorPath: string;
 }
 
@@ -313,8 +315,25 @@ export interface SelectorConfig {
 
 export interface CommandPayload {
   commandId: string;
-  type: 'send_message' | 'approve' | 'reject' | 'approve_all' | 'switch_tab' | 'new_chat' | 'set_mode' | 'set_model' | 'click_action' | 'get_plan_full' | 'get_plan_model_options' | 'set_plan_model';
+  type:
+    | "send_message"
+    | "approve"
+    | "reject"
+    | "approve_all"
+    | "switch_tab"
+    | "new_chat"
+    | "set_mode"
+    | "set_model"
+    | "click_action"
+    | "get_plan_full"
+    | "get_plan_model_options"
+    | "set_plan_model"
+    | "scroll_to_message";
   text?: string;
+  messageId?: string;
+  scrollRatio?: number;
+  flatIndex?: number;
+  scrollTo?: "bottom";
   approvalId?: string;
   actionType?: string;
   selectorPath?: string;
@@ -341,7 +360,7 @@ export interface ServerConfig {
   pollIntervalMs: number;
   debounceMs: number;
   selectorsPath: string;
-  logLevel: 'debug' | 'info' | 'warn' | 'error';
+  logLevel: "debug" | "info" | "warn" | "error";
   webappPassword: string;
   windowTitleQualifier: boolean;
   dataDir: string;
@@ -352,5 +371,5 @@ export interface TelegramConfig {
   enabled: boolean;
   botToken: string;
   preRegisteredUsers: number[];
-  impl: 'grammy' | 'raw';
+  impl: "grammy" | "raw";
 }
