@@ -988,11 +988,35 @@
 
     // --- Tool call ---
 
-    function createToolEl(msg) {
-      const el = document.createElement("div");
-      el.className = "chat-el el-tool";
-      el.dataset.id = msg.id;
+    function fileEntryHasDiff(file) {
+      const db = file?.diffBlock;
+      return !!(
+        db &&
+        ((db.diffLines && db.diffLines.length > 0) ||
+          (db.code && String(db.code).trim().length > 0))
+      );
+    }
 
+    function toolHasExpandableContent(msg) {
+      if (msg.output && String(msg.output).trim()) return true;
+      if (msg.command && String(msg.command).trim() && msg.action === "Shell")
+        return true;
+      if (Array.isArray(msg.files) && msg.files.length > 0) {
+        return msg.files.some((f) => fileEntryHasDiff(f));
+      }
+      return fileEntryHasDiff({ diffBlock: msg.diffBlock });
+    }
+
+    function toolExpandableKey(msg) {
+      return JSON.stringify({
+        files: msg.files,
+        diffBlock: msg.diffBlock,
+        output: msg.output,
+        command: msg.command,
+      });
+    }
+
+    function buildToolLine(msg) {
       const line = document.createElement("div");
       line.className = "tool-line " + msg.status;
 
@@ -1021,33 +1045,196 @@
         }
       }
 
-      if (msg.filename || msg.additions != null || msg.deletions != null) {
+      const fileEntries =
+        Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : null;
+      const showFileInfo =
+        fileEntries ||
+        msg.filename ||
+        msg.additions != null ||
+        msg.deletions != null;
+
+      if (showFileInfo) {
         const fileInfo = document.createElement("span");
         fileInfo.className = "tool-file-info";
 
-        if (msg.filename) {
+        if (fileEntries && fileEntries.length > 1) {
+          const fn = document.createElement("span");
+          fn.className = "tool-filename";
+          fn.textContent = `${fileEntries.length} files`;
+          fileInfo.appendChild(fn);
+        } else if (msg.filename) {
           const fn = document.createElement("span");
           fn.className = "tool-filename";
           fn.textContent = msg.filename;
           fileInfo.appendChild(fn);
         }
-        if (msg.additions != null) {
+
+        const additions =
+          msg.additions ??
+          (fileEntries?.length === 1 ? fileEntries[0].additions : undefined);
+        const deletions =
+          msg.deletions ??
+          (fileEntries?.length === 1 ? fileEntries[0].deletions : undefined);
+
+        if (additions != null) {
           const add = document.createElement("span");
           add.className = "tool-additions";
-          add.textContent = "+" + msg.additions;
+          add.textContent = "+" + additions;
           fileInfo.appendChild(add);
         }
-        if (msg.deletions != null) {
+        if (deletions != null) {
           const del = document.createElement("span");
           del.className = "tool-deletions";
-          del.textContent = "-" + msg.deletions;
+          del.textContent = "-" + deletions;
           fileInfo.appendChild(del);
         }
 
         line.appendChild(fileInfo);
       }
 
-      el.appendChild(line);
+      return line;
+    }
+
+    function createToolFileListItem(file) {
+      const item = document.createElement("div");
+      item.className = "tool-file-item is-open";
+
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "tool-file-toggle";
+      toggle.setAttribute("aria-expanded", "true");
+
+      const chevron = document.createElement("span");
+      chevron.className = "tool-file-chevron";
+      chevron.setAttribute("aria-hidden", "true");
+      chevron.textContent = "\u25BE";
+      toggle.appendChild(chevron);
+
+      const fn = document.createElement("span");
+      fn.className = "tool-filename";
+      fn.textContent = file.filename;
+      toggle.appendChild(fn);
+
+      if (file.additions != null) {
+        const add = document.createElement("span");
+        add.className = "tool-additions";
+        add.textContent = "+" + file.additions;
+        toggle.appendChild(add);
+      }
+      if (file.deletions != null) {
+        const del = document.createElement("span");
+        del.className = "tool-deletions";
+        del.textContent = "-" + file.deletions;
+        toggle.appendChild(del);
+      }
+
+      toggle.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const open = item.classList.toggle("is-open");
+        toggle.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+
+      item.appendChild(toggle);
+
+      const body = document.createElement("div");
+      body.className = "tool-file-body";
+      if (fileEntryHasDiff(file)) {
+        const host = document.createElement("div");
+        host.className = "tool-diff-host";
+        host.appendChild(
+          createNativeBlockFromItem(file.diffBlock, file.filename),
+        );
+        body.appendChild(host);
+      }
+      item.appendChild(body);
+
+      return item;
+    }
+
+    function syncToolExpandBody(body, msg) {
+      if (!body) return;
+      const key = toolExpandableKey(msg);
+      if (body._toolExpandKey === key) return;
+      body._toolExpandKey = key;
+      body.innerHTML = "";
+
+      if (Array.isArray(msg.files) && msg.files.length > 0) {
+        const list = document.createElement("div");
+        list.className = "tool-file-list";
+        for (const file of msg.files) {
+          list.appendChild(createToolFileListItem(file));
+        }
+        body.appendChild(list);
+      } else if (fileEntryHasDiff({ diffBlock: msg.diffBlock })) {
+        const host = document.createElement("div");
+        host.className = "tool-diff-host";
+        host.appendChild(
+          createNativeBlockFromItem(msg.diffBlock, msg.filename),
+        );
+        body.appendChild(host);
+      }
+
+      if (msg.command && String(msg.command).trim()) {
+        const cmdWrap = document.createElement("div");
+        cmdWrap.className = "tool-command-block";
+        const prompt = document.createElement("span");
+        prompt.className = "run-prompt";
+        prompt.textContent = "$ ";
+        const cmdText = document.createElement("span");
+        cmdText.className = "run-command-text";
+        cmdText.textContent = msg.command;
+        cmdWrap.appendChild(prompt);
+        cmdWrap.appendChild(cmdText);
+        body.appendChild(cmdWrap);
+      }
+
+      if (msg.output && String(msg.output).trim()) {
+        const out = document.createElement("pre");
+        out.className = "tool-terminal-output";
+        out.textContent = msg.output;
+        body.appendChild(out);
+      }
+    }
+
+    function createToolEl(msg) {
+      const el = document.createElement("div");
+      el.className = "chat-el el-tool";
+      el.dataset.id = msg.id;
+
+      const line = buildToolLine(msg);
+      const expandable = toolHasExpandableContent(msg);
+
+      if (expandable) {
+        const panel = document.createElement("div");
+        panel.className = "tool-expand-panel is-open";
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "tool-expand-toggle";
+        toggle.setAttribute("aria-expanded", "true");
+
+        const chevron = document.createElement("span");
+        chevron.className = "tool-expand-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        chevron.textContent = "\u25BE";
+        toggle.appendChild(chevron);
+        toggle.appendChild(line);
+
+        const body = document.createElement("div");
+        body.className = "tool-expand-body";
+        syncToolExpandBody(body, msg);
+
+        toggle.addEventListener("click", () => {
+          const open = panel.classList.toggle("is-open");
+          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+
+        panel.appendChild(toggle);
+        panel.appendChild(body);
+        el.appendChild(panel);
+      } else {
+        el.appendChild(line);
+      }
 
       if (msg.actions && msg.actions.length > 0) {
         const actionsRow = document.createElement("div");
@@ -1056,63 +1243,53 @@
         el.appendChild(actionsRow);
       }
 
-      syncToolDiffHost(el, msg);
       return el;
     }
 
-    /** Tool edit diff: native block from `diffBlock` (structured lines). */
-    function syncToolDiffHost(el, msg) {
-      const db = msg.diffBlock;
-      const hasBody =
-        db &&
-        ((db.diffLines && db.diffLines.length > 0) ||
-          (db.code && String(db.code).trim().length > 0));
-      let host = el.querySelector(".tool-diff-host");
-
-      if (!hasBody) {
-        if (host) {
-          delete host._nativeDiffKey;
-          host.remove();
-        }
-        return;
-      }
-
-      const key = JSON.stringify({
-        bk: db.blockKind,
-        c: db.code,
-        d: db.diffLines,
-        f: db.filename || msg.filename,
-      });
-      if (!host) {
-        host = document.createElement("div");
-        host.className = "tool-diff-host";
-        el.appendChild(host);
-      }
-      if (host._nativeDiffKey === key) return;
-      host._nativeDiffKey = key;
-      host.innerHTML = "";
-      host.appendChild(createNativeBlockFromItem(db, msg.filename));
-    }
-
     function updateToolEl(el, msg) {
+      const wasOpen =
+        el.querySelector(".tool-expand-panel")?.classList.contains("is-open") ??
+        true;
       const fresh = createToolEl(msg);
-      const newLine = fresh.querySelector(".tool-line");
-      const oldLine = el.querySelector(".tool-line");
-      if (newLine && oldLine) el.replaceChild(newLine, oldLine);
+      const oldPanel = el.querySelector(".tool-expand-panel");
+      const newPanel = fresh.querySelector(".tool-expand-panel");
+
+      if (oldPanel && newPanel) {
+        oldPanel.replaceWith(newPanel);
+      } else if (!oldPanel && newPanel) {
+        el.querySelector(".tool-line")?.remove();
+        const actions = el.querySelector(".tool-actions-row");
+        if (actions) el.insertBefore(newPanel, actions);
+        else el.appendChild(newPanel);
+      } else if (oldPanel && !newPanel) {
+        const newLine = fresh.querySelector(".tool-line");
+        if (newLine) oldPanel.replaceWith(newLine);
+        else oldPanel.remove();
+      } else {
+        const oldLine = el.querySelector(".tool-line");
+        const newLine = fresh.querySelector(".tool-line");
+        if (oldLine && newLine) oldLine.replaceWith(newLine);
+      }
 
       const newActions = fresh.querySelector(".tool-actions-row");
       const oldActions = el.querySelector(".tool-actions-row");
       if (newActions && oldActions) {
         el.replaceChild(newActions, oldActions);
       } else if (newActions && !oldActions) {
-        const diffHost = el.querySelector(".tool-diff-host");
-        if (diffHost) el.insertBefore(newActions, diffHost);
-        else el.appendChild(newActions);
+        el.appendChild(newActions);
       } else if (!newActions && oldActions) {
         oldActions.remove();
       }
 
-      syncToolDiffHost(el, msg);
+      if (!wasOpen) {
+        const panel = el.querySelector(".tool-expand-panel");
+        if (panel) {
+          panel.classList.remove("is-open");
+          panel
+            .querySelector(".tool-expand-toggle")
+            ?.setAttribute("aria-expanded", "false");
+        }
+      }
     }
 
     // --- Thought block ---
@@ -1584,6 +1761,10 @@
       }
       card.appendChild(header);
 
+      const hasOutput = msg.output && String(msg.output).trim();
+      const body = document.createElement("div");
+      body.className = "run-expand-body";
+
       const cmdBlock = document.createElement("div");
       cmdBlock.className = "run-command-block";
       const prompt = document.createElement("span");
@@ -1594,7 +1775,46 @@
       cmdText.className = "run-command-text";
       cmdText.textContent = msg.command;
       cmdBlock.appendChild(cmdText);
-      card.appendChild(cmdBlock);
+      body.appendChild(cmdBlock);
+
+      if (hasOutput) {
+        const out = document.createElement("pre");
+        out.className = "run-terminal-output";
+        out.textContent = msg.output;
+        body.appendChild(out);
+      }
+
+      if (hasOutput) {
+        const panel = document.createElement("div");
+        panel.className = "run-expand-panel is-open";
+
+        const toggle = document.createElement("button");
+        toggle.type = "button";
+        toggle.className = "run-expand-toggle";
+        toggle.setAttribute("aria-expanded", "true");
+
+        const chevron = document.createElement("span");
+        chevron.className = "run-expand-chevron";
+        chevron.setAttribute("aria-hidden", "true");
+        chevron.textContent = "\u25BE";
+
+        const label = document.createElement("span");
+        label.className = "run-expand-label";
+        label.textContent = "Command output";
+
+        toggle.appendChild(chevron);
+        toggle.appendChild(label);
+        toggle.addEventListener("click", () => {
+          const open = panel.classList.toggle("is-open");
+          toggle.setAttribute("aria-expanded", open ? "true" : "false");
+        });
+
+        panel.appendChild(toggle);
+        panel.appendChild(body);
+        card.appendChild(panel);
+      } else {
+        card.appendChild(body);
+      }
 
       if (msg.actions && msg.actions.length > 0) {
         const actionsRow = document.createElement("div");
@@ -1608,6 +1828,9 @@
     }
 
     function updateRunCommandEl(el, msg) {
+      const wasOpen =
+        el.querySelector(".run-expand-panel")?.classList.contains("is-open") ??
+        true;
       const oldCommand = (
         el.querySelector(".run-command-text")?.textContent || ""
       ).trim();
@@ -1618,7 +1841,16 @@
       const fresh = createRunCommandEl(nextMsg);
       const newCard = fresh.querySelector(".run-card");
       const oldCard = el.querySelector(".run-card");
-      if (newCard && oldCard) el.replaceChild(newCard, oldCard);
+      if (newCard && oldCard) {
+        oldCard.replaceWith(newCard);
+        if (!wasOpen) {
+          const panel = el.querySelector(".run-expand-panel");
+          panel?.classList.remove("is-open");
+          panel
+            ?.querySelector(".run-expand-toggle")
+            ?.setAttribute("aria-expanded", "false");
+        }
+      }
     }
 
     // --- Loading indicator ---

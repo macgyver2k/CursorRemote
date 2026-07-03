@@ -204,8 +204,9 @@ export function extractionFunction(
       if (el.querySelector(".todo-list-container")) flags.push("todo-list");
       if (el.querySelector(".ui-tool-call-line-action"))
         flags.push("tool-line");
-      if (el.querySelector(".ui-edit-tool-call__filename"))
-        flags.push("edit-file");
+      if (el.querySelector(".ui-edit-tool-call")) flags.push("ui-edit-tool");
+      if (el.querySelector(".ui-shell-tool-call__description"))
+        flags.push("ui-shell-tool");
       if (el.querySelector(".composer-message-group"))
         flags.push("message-group");
       if (el.querySelector(".markdown-root")) flags.push("markdown");
@@ -579,11 +580,78 @@ export function extractionFunction(
     function extractDiffBlockFromScope(
       scope: Element,
     ): CodeBlockItem | undefined {
+      const uiDiff = extractUiDefaultDiff(scope);
+      if (uiDiff) return uiDiff;
       const block = scope.querySelector(
         ".composer-code-block-container, .composer-message-codeblock",
       );
       if (!block) return undefined;
       return extractCodeBlockItem(block);
+    }
+
+    function extractUiDefaultDiff(scope: Element): CodeBlockItem | undefined {
+      const diffRoot = scope.querySelector(".ui-default-diff");
+      if (!diffRoot) return undefined;
+      const lineEls = diffRoot.querySelectorAll(".ui-default-diff__line");
+      if (lineEls.length === 0) return undefined;
+      const diffLines: { kind: DiffLineKind; text: string }[] = [];
+      const codeParts: string[] = [];
+      for (const line of Array.from(lineEls)) {
+        const lineType = line.getAttribute("data-type") || "unchanged";
+        const text = (line.textContent || "")
+          .replace(/\u00a0/g, " ")
+          .replace(/\r/g, "")
+          .trimEnd();
+        let kind: DiffLineKind = "ctx";
+        if (lineType === "added") kind = "add";
+        else if (lineType === "removed") kind = "rem";
+        diffLines.push({ kind, text });
+        codeParts.push(text);
+      }
+      const filenameEl = scope.querySelector(
+        ".ui-edit-tool-call__filename, .composer-code-block-filename, .ui-code-block-filename",
+      );
+      const filename = filenameEl
+        ? (filenameEl.textContent || "").trim() || undefined
+        : undefined;
+      return {
+        blockKind: "diff",
+        filename,
+        code: codeParts.join("\n"),
+        diffLines,
+      };
+    }
+
+    function extractEditToolFileEntries(toolRoot: Element): {
+      filename: string;
+      additions?: number;
+      deletions?: number;
+      diffBlock?: CodeBlockItem;
+    }[] {
+      const cards = toolRoot.querySelectorAll(".ui-edit-tool-call");
+      if (cards.length === 0) return [];
+      const files: {
+        filename: string;
+        additions?: number;
+        deletions?: number;
+        diffBlock?: CodeBlockItem;
+      }[] = [];
+      for (const card of Array.from(cards)) {
+        const filename = (
+          card.querySelector(".ui-edit-tool-call__filename")?.textContent || ""
+        ).trim();
+        if (!filename) continue;
+        const stats = tryParseDiffStatsFromWrapper(card);
+        const diffBlock =
+          extractUiDefaultDiff(card) || extractDiffBlockFromScope(card);
+        files.push({
+          filename,
+          additions: stats.additions,
+          deletions: stats.deletions,
+          ...(diffBlock ? { diffBlock } : {}),
+        });
+      }
+      return files;
     }
 
     const cleanBtnLabel = (raw: string): string =>
@@ -896,6 +964,95 @@ export function extractionFunction(
             actions: actions.length > 0 ? actions : undefined,
           },
           parsedAs: "plan",
+        };
+      }
+
+      const editFiles = extractEditToolFileEntries(toolRoot);
+      if (editFiles.length > 0) {
+        const primary = editFiles[0];
+        const editActions = extractToolActions(toolRoot);
+        return {
+          element: {
+            type: "tool" as const,
+            id: messageId,
+            flatIndex,
+            toolCallId,
+            status: toolStatus,
+            action: editFiles.length > 1 ? "Edit" : "Edit",
+            details: editFiles.length > 1 ? `${editFiles.length} files` : "",
+            filename: primary.filename,
+            additions: primary.additions,
+            deletions: primary.deletions,
+            files: editFiles,
+            actions: editActions.length > 0 ? editActions : undefined,
+            ...(primary.diffBlock ? { diffBlock: primary.diffBlock } : {}),
+          },
+          parsedAs:
+            editFiles.length > 1 ? "tool:ui-edit-multi" : "tool:ui-edit",
+        };
+      }
+
+      const shellDescEl = toolRoot.querySelector(
+        ".ui-shell-tool-call__description",
+      );
+      if (shellDescEl) {
+        const shellCard =
+          shellDescEl.closest(".ui-tool-call-card") ||
+          toolRoot.closest(".ui-tool-call-card") ||
+          toolRoot;
+        const description = (shellDescEl.textContent || "").trim();
+        const summary = (
+          shellCard.querySelector(".ui-shell-tool-call__summary")
+            ?.textContent || ""
+        ).trim();
+        const command = (
+          shellCard.querySelector(".ui-shell-tool-call__command")
+            ?.textContent || ""
+        )
+          .trim()
+          .replace(/^\$\s*/, "");
+        const output = (
+          shellCard.querySelector(".ui-shell-tool-call__output")?.textContent ||
+          shellCard.querySelector(".composer-terminal-output")?.textContent ||
+          shellCard.querySelector(".xterm-rows")?.textContent ||
+          ""
+        ).trim();
+        const shellActions = extractToolActions(shellCard);
+        const commandText = command || summary;
+        const hasPendingActions =
+          shellActions.length > 0 && toolStatus !== "completed";
+
+        if (hasPendingActions) {
+          return {
+            element: {
+              type: "run_command" as const,
+              id: messageId,
+              flatIndex,
+              toolCallId,
+              description,
+              candidates: summary,
+              command: commandText,
+              actions: shellActions,
+              ...(output ? { output } : {}),
+            },
+            parsedAs: "run_command:ui-shell",
+          };
+        }
+
+        return {
+          element: {
+            type: "tool" as const,
+            id: messageId,
+            flatIndex,
+            toolCallId,
+            status: toolStatus,
+            action: "Shell",
+            details: description || summary,
+            command: commandText || undefined,
+            output: output || undefined,
+            summaryText: !description && summary ? summary : undefined,
+          },
+          parsedAs: "tool:ui-shell",
         };
       }
 
@@ -1269,7 +1426,7 @@ export function extractionFunction(
           type: "thought" as const,
           id: messageId,
           flatIndex,
-          duration: parsed.duration || undefined,
+          duration: parsed.duration || "",
           action:
             parsed.action || text.split("\n")[0]?.slice(0, 120) || "Thinking",
           detail:

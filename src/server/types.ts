@@ -181,6 +181,13 @@ export interface AssistantMessage {
   codeBlocks: CodeBlockItem[];
 }
 
+export interface ToolFileEntry {
+  filename: string;
+  additions?: number;
+  deletions?: number;
+  diffBlock?: CodeBlockItem;
+}
+
 export interface ToolCallElement {
   type: "tool";
   id: string;
@@ -197,6 +204,12 @@ export interface ToolCallElement {
   blocked?: string;
   /** Structured diff/code for edit tools; web client renders natively */
   diffBlock?: CodeBlockItem;
+  /** Per-file edits when one tool hosts multiple edit cards */
+  files?: ToolFileEntry[];
+  /** Shell command text (completed or in-progress terminal tools) */
+  command?: string;
+  /** Terminal stdout/stderr captured from the shell tool body */
+  output?: string;
 }
 
 export interface ThoughtBlock {
@@ -278,6 +291,8 @@ export interface RunCommand {
   candidates: string;
   command: string;
   actions: RunAction[];
+  /** Terminal output when the command has already produced output */
+  output?: string;
 }
 
 export interface LoadingIndicator {

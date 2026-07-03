@@ -58,9 +58,9 @@ function elementContentKey(el: ChatElement): string {
     case "human":
       return String(el.text.length);
     case "tool":
-      return `${el.status}:${el.action}:${el.filename ?? ""}`;
+      return `${el.status}:${el.action}:${el.filename ?? ""}:${el.output?.length ?? 0}:${el.files?.length ?? 0}:${el.diffBlock?.code?.length ?? 0}`;
     case "run_command":
-      return `${el.command.length}:${el.actions.length}`;
+      return `${el.command.length}:${el.actions.length}:${el.output?.length ?? 0}`;
     case "thought":
       return `${el.thoughtKind ?? ""}:${el.action ?? ""}:${el.detail ?? ""}:${el.duration ?? ""}`;
     case "plan":
