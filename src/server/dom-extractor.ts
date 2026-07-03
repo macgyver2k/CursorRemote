@@ -589,24 +589,64 @@ export function extractionFunction(
       return extractCodeBlockItem(block);
     }
 
+    function cleanDiffLineText(s: string): string {
+      return (s || "")
+        .replace(/\u00a0/g, " ")
+        .replace(/\r/g, "")
+        .trimEnd();
+    }
+
+    function extractUiDefaultDiffLine(line: Element): {
+      kind: DiffLineKind;
+      text: string;
+      lineNumber?: string;
+      code?: string;
+    } {
+      const lineType = line.getAttribute("data-type") || "unchanged";
+      let kind: DiffLineKind = "ctx";
+      if (lineType === "added") kind = "add";
+      else if (lineType === "removed") kind = "rem";
+
+      const numEl = line.querySelector(
+        ".ui-default-diff__line-number, [class*='__line-number']",
+      );
+      const contentEl = line.querySelector(
+        ".ui-default-diff__line-content, [class*='__line-content']",
+      );
+      const text = cleanDiffLineText(line.textContent || "");
+
+      if (contentEl) {
+        const lineNumber = numEl
+          ? cleanDiffLineText(numEl.textContent || "").trim()
+          : undefined;
+        const code = cleanDiffLineText(contentEl.textContent || "");
+        return {
+          kind,
+          text,
+          lineNumber: lineNumber || undefined,
+          code,
+        };
+      }
+
+      return { kind, text };
+    }
+
     function extractUiDefaultDiff(scope: Element): CodeBlockItem | undefined {
       const diffRoot = scope.querySelector(".ui-default-diff");
       if (!diffRoot) return undefined;
       const lineEls = diffRoot.querySelectorAll(".ui-default-diff__line");
       if (lineEls.length === 0) return undefined;
-      const diffLines: { kind: DiffLineKind; text: string }[] = [];
+      const diffLines: {
+        kind: DiffLineKind;
+        text: string;
+        lineNumber?: string;
+        code?: string;
+      }[] = [];
       const codeParts: string[] = [];
       for (const line of Array.from(lineEls)) {
-        const lineType = line.getAttribute("data-type") || "unchanged";
-        const text = (line.textContent || "")
-          .replace(/\u00a0/g, " ")
-          .replace(/\r/g, "")
-          .trimEnd();
-        let kind: DiffLineKind = "ctx";
-        if (lineType === "added") kind = "add";
-        else if (lineType === "removed") kind = "rem";
-        diffLines.push({ kind, text });
-        codeParts.push(text);
+        const parsed = extractUiDefaultDiffLine(line);
+        diffLines.push(parsed);
+        codeParts.push(parsed.text);
       }
       const filenameEl = scope.querySelector(
         ".ui-edit-tool-call__filename, .composer-code-block-filename, .ui-code-block-filename",

@@ -161,6 +161,13 @@ export interface HumanMessage {
 
 export type DiffLineKind = "add" | "rem" | "ctx" | "meta" | "hunk";
 
+export interface DiffLineItem {
+  kind: DiffLineKind;
+  text: string;
+  lineNumber?: string;
+  code?: string;
+}
+
 /** Native web/Telegram rendering: structured code or diff (no mirrored Monaco HTML). */
 export interface CodeBlockItem {
   blockKind: "code" | "diff";
@@ -169,7 +176,7 @@ export interface CodeBlockItem {
   /** Flat joined text (search, fallback, simple pre) */
   code: string;
   /** Present when blockKind === 'diff'; line-level add/rem/ctx from live Monaco DOM */
-  diffLines?: { kind: DiffLineKind; text: string }[];
+  diffLines?: DiffLineItem[];
 }
 
 export interface AssistantMessage {

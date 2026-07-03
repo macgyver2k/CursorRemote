@@ -696,7 +696,7 @@
         restoreScrollAnchor(anchor);
       } else if (!userScrolledUp) {
         const nestedToolScroll = $messages.querySelector(
-          ".tool-collapsible-stage.is-expanded .code-block-viewport, .tool-collapsible-stage.is-expanded .tool-terminal-output",
+          ".tool-collapsible-stage.is-expanded .tool-collapsible-stage-body",
         );
         const nestedScrolled =
           nestedToolScroll && nestedToolScroll.scrollTop > 8;
@@ -836,6 +836,202 @@
 
     // --- Assistant message ---
 
+    function serverKindToType(kind) {
+      if (kind === "add") return "added";
+      if (kind === "rem") return "removed";
+      if (kind === "meta") return "meta";
+      if (kind === "hunk") return "hunk";
+      return "unchanged";
+    }
+
+    function diffTypeCss(type) {
+      if (type === "added") return "add";
+      if (type === "removed") return "rem";
+      if (type === "meta") return "meta";
+      if (type === "hunk") return "hunk";
+      return "ctx";
+    }
+
+    function parseLineNumberAndCode(text) {
+      const strict = text.match(/^(\s*)(\d+)(?:\s*[│|]\s*|\s+)(.*)$/);
+      if (strict) return { lineNumber: strict[2], code: strict[3] };
+      const loose = text.match(/^(\s*)(\d+)(?=\D)(.*)$/);
+      if (loose) return { lineNumber: loose[2], code: loose[3].trimStart() };
+      return null;
+    }
+
+    function parseDiffLine(line) {
+      const { kind, text, lineNumber: preNum, code: preCode } = line;
+      const fallbackType = serverKindToType(kind);
+
+      if (preCode != null) {
+        let marker = "";
+        if (kind === "add") marker = "+";
+        else if (kind === "rem") marker = "-";
+        return {
+          lineNumber: preNum != null ? String(preNum).trim() : "",
+          type: fallbackType,
+          code: preCode,
+          marker,
+          full: false,
+        };
+      }
+
+      if (
+        text.startsWith("+++ ") ||
+        text.startsWith("--- ") ||
+        text.startsWith("***") ||
+        text.startsWith("@@")
+      ) {
+        return {
+          lineNumber: "",
+          type: text.startsWith("@@") ? "hunk" : "meta",
+          code: text,
+          marker: "",
+          full: true,
+        };
+      }
+
+      let marked = text.match(/^([+-])(\s*)(\d+)(?:\s*[│|]\s*|\s+)(.*)$/);
+      if (marked) {
+        return {
+          lineNumber: marked[3],
+          type: marked[1] === "+" ? "added" : "removed",
+          code: marked[4],
+          marker: marked[1],
+          full: false,
+        };
+      }
+      marked = text.match(/^([+-])(\s*)(\d+)(?=\D)(.*)$/);
+      if (marked) {
+        return {
+          lineNumber: marked[3],
+          type: marked[1] === "+" ? "added" : "removed",
+          code: marked[4].trimStart(),
+          marker: marked[1],
+          full: false,
+        };
+      }
+
+      if (text.startsWith("+") || text.startsWith("-")) {
+        const marker = text[0];
+        const rest = text.slice(1);
+        const num = parseLineNumberAndCode(rest);
+        if (num) {
+          return {
+            lineNumber: num.lineNumber,
+            type: marker === "+" ? "added" : "removed",
+            code: num.code,
+            marker,
+            full: false,
+          };
+        }
+        return {
+          lineNumber: "",
+          type: marker === "+" ? "added" : "removed",
+          code: rest,
+          marker,
+          full: false,
+        };
+      }
+
+      if (text.startsWith(" ")) {
+        const rest = text.slice(1);
+        const num = parseLineNumberAndCode(rest);
+        if (num) {
+          return {
+            lineNumber: num.lineNumber,
+            type: fallbackType,
+            code: num.code,
+            marker: "",
+            full: false,
+          };
+        }
+        return {
+          lineNumber: "",
+          type: "unchanged",
+          code: rest,
+          marker: " ",
+          full: false,
+        };
+      }
+
+      const num = parseLineNumberAndCode(text);
+      if (num) {
+        return {
+          lineNumber: num.lineNumber,
+          type: fallbackType,
+          code: num.code,
+          marker: "",
+          full: false,
+        };
+      }
+
+      return {
+        lineNumber: "",
+        type: fallbackType,
+        code: text,
+        marker: "",
+        full: false,
+      };
+    }
+
+    function parseDiffLines(diffLines) {
+      return diffLines.map((line) => ({
+        ...parseDiffLine(line),
+        raw: line.text,
+      }));
+    }
+
+    function diffLineLayout(parsedLines) {
+      let gutterCh = 0;
+      let useMarker = false;
+      for (const line of parsedLines) {
+        if (line.full) continue;
+        if (line.marker) useMarker = true;
+        if (line.lineNumber.length > gutterCh)
+          gutterCh = line.lineNumber.length;
+      }
+      if (!useMarker && gutterCh === 0) return null;
+      return { marker: useMarker, gutterCh };
+    }
+
+    function appendDiffLineRow(body, parsed, layout) {
+      const row = document.createElement("div");
+      row.className =
+        "code-block-diff-line code-block-diff-line--" +
+        diffTypeCss(parsed.type);
+      if (layout) {
+        if (parsed.full) {
+          row.classList.add("code-block-diff-line--span");
+          const code = document.createElement("span");
+          code.className = "code-block-diff-code";
+          code.textContent = parsed.code;
+          row.appendChild(code);
+        } else {
+          if (layout.marker) {
+            const marker = document.createElement("span");
+            marker.className = "code-block-diff-marker";
+            marker.textContent = parsed.marker;
+            row.appendChild(marker);
+          }
+          if (layout.gutterCh > 0) {
+            const gutter = document.createElement("span");
+            gutter.className = "code-block-diff-gutter";
+            gutter.textContent = parsed.lineNumber;
+            row.appendChild(gutter);
+          }
+          const code = document.createElement("span");
+          code.className = "code-block-diff-code";
+          code.textContent = parsed.code;
+          row.appendChild(code);
+        }
+      } else {
+        row.textContent = parsed.raw;
+      }
+      body.appendChild(row);
+    }
+
     /** Native code/diff from server `CodeBlockItem` (no mirrored Monaco HTML). */
     function createNativeBlockFromItem(item, filenameFallback, options) {
       const hideTitle = options?.hideTitle === true;
@@ -868,14 +1064,16 @@
         item.diffLines &&
         item.diffLines.length > 0
       ) {
-        for (const line of item.diffLines) {
-          const row = document.createElement("div");
-          const k = ["add", "rem", "ctx", "meta", "hunk"].includes(line.kind)
-            ? line.kind
-            : "ctx";
-          row.className = "code-block-diff-line code-block-diff-line--" + k;
-          row.textContent = line.text;
-          body.appendChild(row);
+        const parsed = parseDiffLines(item.diffLines);
+        const layout = diffLineLayout(parsed);
+        if (layout) {
+          body.classList.add("code-block-diff-plain--gutter");
+          if (layout.gutterCh > 0) {
+            body.style.setProperty("--diff-gutter-ch", String(layout.gutterCh));
+          }
+        }
+        for (const line of parsed) {
+          appendDiffLineRow(body, line, layout);
         }
       } else {
         const pre = document.createElement("pre");
@@ -1041,13 +1239,9 @@
     function captureToolNestedScroll(root) {
       const saved = [];
       if (!root) return saved;
-      root
-        .querySelectorAll(
-          ".tool-collapsible-stage .code-block-viewport, .tool-terminal-output",
-        )
-        .forEach((node) => {
-          saved.push({ node, top: node.scrollTop });
-        });
+      root.querySelectorAll(".tool-collapsible-stage-body").forEach((node) => {
+        saved.push({ node, top: node.scrollTop });
+      });
       return saved;
     }
 
@@ -1065,15 +1259,14 @@
         d: db.diffLines,
       });
       if (host._nativeDiffKey === key) return;
-      const viewport = host.querySelector(".code-block-viewport");
-      const scrollTop = viewport?.scrollTop ?? 0;
+      const stageBody = host.closest(".tool-collapsible-stage-body");
+      const scrollTop = stageBody?.scrollTop ?? 0;
       host._nativeDiffKey = key;
       host.innerHTML = "";
       host.appendChild(
         createNativeBlockFromItem(db, filenameFallback, { hideTitle: true }),
       );
-      const nextViewport = host.querySelector(".code-block-viewport");
-      if (nextViewport) nextViewport.scrollTop = scrollTop;
+      if (stageBody) stageBody.scrollTop = scrollTop;
     }
 
     function fileEntryHasDiff(file) {
@@ -1325,9 +1518,10 @@
       }
       const out = content.querySelector(".tool-terminal-output");
       if (out && msg.output && out.textContent !== msg.output) {
-        const scrollTop = out.scrollTop;
+        const stageBody = out.closest(".tool-collapsible-stage-body");
+        const scrollTop = stageBody?.scrollTop ?? 0;
         out.textContent = msg.output;
-        out.scrollTop = scrollTop;
+        if (stageBody) stageBody.scrollTop = scrollTop;
       }
     }
 

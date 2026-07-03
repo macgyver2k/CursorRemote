@@ -202,12 +202,11 @@ header {
 
 .el-human {
   display: flex;
-  justify-content: flex-end;
   padding: 2px 0;
 }
 
 .human-bubble {
-  max-width: 85%;
+  width: 100%;
   padding: 6px 12px;
   background: var(--bg-user-msg);
   border-radius: var(--radius);
@@ -361,6 +360,7 @@ header {
   overflow: visible;
   background: var(--bg-code);
   border: 1px solid rgba(228, 228, 228, 0.12);
+  --tool-diff-expanded-lines: 20;
 }
 
 .tool-collapsible-stage-body {
@@ -371,9 +371,7 @@ header {
 
 .tool-collapsible-stage.is-compact .tool-collapsible-stage-body {
   max-height: 80px;
-  overflow: auto;
-  -webkit-overflow-scrolling: touch;
-  overscroll-behavior: contain;
+  overflow: hidden;
 }
 
 .tool-collapsible-stage.is-compact .tool-collapsible-stage-body::after {
@@ -388,21 +386,54 @@ header {
 }
 
 .tool-collapsible-stage.is-expanded .tool-collapsible-stage-body {
-  max-height: none;
+  max-height: min(
+    55vh,
+    calc(var(--cb-font) * var(--cb-lh) * var(--tool-diff-expanded-lines) + 12px)
+  );
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.tool-collapsible-stage.is-expanded
+  .tool-collapsible-stage-body::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.tool-collapsible-stage.is-expanded
+  .tool-collapsible-stage-body::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+.tool-collapsible-stage.is-expanded
+  .tool-collapsible-stage-body::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 3px;
+}
+
+.tool-collapsible-stage.is-expanded
+  .tool-collapsible-stage-body::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+  border-radius: 3px;
+}
+
+.tool-collapsible-stage.is-expanded
+  .tool-collapsible-stage-body::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover);
 }
 
 .tool-collapsible-stage.is-expanded .tool-collapsible-stage-body::after {
   display: none;
 }
 
-.tool-collapsible-stage.is-compact .code-block-viewport,
-.tool-collapsible-stage.is-compact .tool-terminal-output {
-  max-height: none;
-  overflow: visible;
-}
-
-.tool-collapsible-stage.is-expanded .code-block-viewport,
-.tool-collapsible-stage.is-expanded .tool-terminal-output {
+.tool-collapsible-stage .code-block-viewport,
+.tool-collapsible-stage .tool-terminal-output,
+.tool-collapsible-stage .code-block-diff-plain {
   max-height: none;
   overflow: visible;
 }
@@ -500,8 +531,9 @@ header {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: visible;
 }
 
 .tool-collapsible-stage .tool-terminal-output {
@@ -691,6 +723,7 @@ header {
   font-size: var(--cb-font);
   line-height: var(--cb-lh);
   background: var(--bg-code);
+  overflow-x: auto;
 }
 
 .code-block-diff-plain--raw pre {
@@ -700,10 +733,45 @@ header {
 }
 
 .code-block-diff-line {
-  white-space: pre;
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
   padding: 1px 6px 1px 8px;
   margin: 0 -6px;
   border-radius: 2px;
+}
+
+.code-block-diff-plain:not(.code-block-diff-plain--gutter)
+  .code-block-diff-line {
+  white-space: pre;
+}
+
+.code-block-diff-marker {
+  flex: 0 0 calc(1ch + 0.75ch);
+  text-align: center;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.code-block-diff-gutter {
+  flex: 0 0 calc(var(--diff-gutter-ch, 1) * 1ch + 1ch);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.code-block-diff-gutter + .code-block-diff-code {
+  padding-left: 2ch;
+}
+
+.code-block-diff-code {
+  flex: 0 0 auto;
+  white-space: pre;
+}
+
+.code-block-diff-line--span .code-block-diff-code {
+  flex: 1 1 auto;
 }
 
 .code-block-diff-line--ctx {
@@ -713,15 +781,13 @@ header {
 .code-block-diff-line--add {
   background: rgba(63, 185, 80, 0.22);
   color: rgba(230, 245, 233, 0.98);
-  border-left: 3px solid rgba(63, 185, 80, 0.95);
-  padding-left: 10px;
+  box-shadow: inset 3px 0 0 rgba(63, 185, 80, 0.95);
 }
 
 .code-block-diff-line--rem {
   background: rgba(248, 81, 73, 0.2);
   color: rgba(255, 232, 230, 0.98);
-  border-left: 3px solid rgba(248, 81, 73, 0.9);
-  padding-left: 10px;
+  box-shadow: inset 3px 0 0 rgba(248, 81, 73, 0.9);
 }
 
 .code-block-diff-line--meta,
@@ -1388,11 +1454,11 @@ header {
   font-size: 11px;
   line-height: 1.45;
   color: var(--text-primary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 160px;
-  overflow: auto;
+  white-space: pre;
+  overflow-x: auto;
+  overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  max-height: 160px;
 }
 
 .run-prompt {
@@ -2211,9 +2277,6 @@ header {
   #messages {
     padding-left: max(16px, calc((100% - 800px) / 2));
     padding-right: max(16px, calc((100% - 800px) / 2));
-  }
-  .human-bubble {
-    max-width: 75%;
   }
   .btn-approve,
   .btn-reject {
