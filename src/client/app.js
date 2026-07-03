@@ -1537,28 +1537,6 @@
       icon.textContent = msg.status === "completed" ? "\u2713" : "\u2022";
       line.appendChild(icon);
 
-      if (!compactHeader) {
-        if (msg.summaryText) {
-          const summary = document.createElement("span");
-          summary.className = "tool-summary";
-          summary.textContent = msg.summaryText;
-          line.appendChild(summary);
-        } else {
-          if (msg.action) {
-            const action = document.createElement("span");
-            action.className = "tool-action";
-            action.textContent = msg.action;
-            line.appendChild(action);
-          }
-          if (msg.details) {
-            const details = document.createElement("span");
-            details.className = "tool-details";
-            details.textContent = msg.details;
-            line.appendChild(details);
-          }
-        }
-      }
-
       const fileEntries =
         Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : null;
       const showFileInfo =
@@ -1576,11 +1554,16 @@
           fn.className = "tool-filename";
           fn.textContent = `${fileEntries.length} files`;
           fileInfo.appendChild(fn);
-        } else if (msg.filename) {
-          const fn = document.createElement("span");
-          fn.className = "tool-filename";
-          fn.textContent = msg.filename;
-          fileInfo.appendChild(fn);
+        } else {
+          const singleFilename =
+            msg.filename ||
+            (fileEntries?.length === 1 ? fileEntries[0].filename : undefined);
+          if (singleFilename) {
+            const fn = document.createElement("span");
+            fn.className = "tool-filename";
+            fn.textContent = singleFilename;
+            fileInfo.appendChild(fn);
+          }
         }
 
         const additions =
@@ -1604,6 +1587,28 @@
         }
 
         line.appendChild(fileInfo);
+      }
+
+      if (!compactHeader) {
+        if (msg.summaryText) {
+          const summary = document.createElement("span");
+          summary.className = "tool-summary";
+          summary.textContent = msg.summaryText;
+          line.appendChild(summary);
+        } else {
+          if (msg.action) {
+            const action = document.createElement("span");
+            action.className = "tool-action";
+            action.textContent = msg.action;
+            line.appendChild(action);
+          }
+          if (msg.details) {
+            const details = document.createElement("span");
+            details.className = "tool-details";
+            details.textContent = msg.details;
+            line.appendChild(details);
+          }
+        }
       }
 
       return line;
