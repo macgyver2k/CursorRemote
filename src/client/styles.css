@@ -37,6 +37,18 @@
   --scrollbar-track: rgba(0, 0, 0, 0.45);
   --scrollbar-thumb: rgba(228, 228, 228, 0.22);
   --scrollbar-thumb-hover: rgba(228, 228, 228, 0.34);
+
+  --shiki-foreground: rgba(228, 228, 228, 0.92);
+  --shiki-token-comment: #7f848e;
+  --shiki-token-keyword: #c678dd;
+  --shiki-token-type: #e5c07b;
+  --shiki-token-function: #61afef;
+  --shiki-token-string: #98c379;
+  --shiki-token-punctuation: rgba(228, 228, 228, 0.72);
+  --shiki-token-constant: #d19a66;
+  --shiki-token-parameter: #abb2bf;
+  --shiki-token-deleted: #e06c75;
+  --shiki-token-inserted: #98c379;
 }
 
 *,
@@ -582,7 +594,7 @@ header {
   padding: 1px 4px;
   border-radius: 3px;
 }
-.assistant-content.markdown-body pre code {
+.assistant-content.markdown-body pre code.hljs {
   display: block;
   padding: 0;
   border-radius: 0;
@@ -591,7 +603,17 @@ header {
   white-space: pre;
   line-height: 1.5;
 }
-.assistant-content.markdown-body pre code span {
+
+.assistant-content.markdown-body pre code:not(.hljs) {
+  display: block;
+  padding: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--shiki-foreground);
+  white-space: pre;
+  line-height: 1.5;
+}
+.assistant-content.markdown-body pre code:not(.hljs) span {
   color: inherit;
 }
 .assistant-content.markdown-body pre code .line,
@@ -607,19 +629,224 @@ header {
   text-decoration: none;
 }
 
-/* Shiki vars if Streamdown embeds inline code blocks in markdown HTML */
-.assistant-content.markdown-body {
-  --shiki-foreground: rgba(228, 228, 228, 0.92);
-  --shiki-token-comment: #7f848e;
-  --shiki-token-keyword: #c678dd;
-  --shiki-token-type: #e5c07b;
-  --shiki-token-function: #61afef;
-  --shiki-token-string: #98c379;
-  --shiki-token-punctuation: rgba(228, 228, 228, 0.72);
-  --shiki-token-constant: #d19a66;
-  --shiki-token-parameter: #abb2bf;
-  --shiki-token-deleted: #e06c75;
-  --shiki-token-inserted: #98c379;
+.hljs-comment,
+.hljs-quote {
+  color: var(--shiki-token-comment);
+}
+
+pre code.hljs .hljs-comment,
+pre code.hljs .hljs-quote,
+.code-block pre code.hljs .hljs-comment,
+.code-block pre code.hljs .hljs-quote {
+  color: var(--shiki-token-comment);
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--shiki-token-keyword);
+}
+
+pre code.hljs .hljs-keyword,
+pre code.hljs .hljs-selector-tag,
+pre code.hljs .hljs-selector-id,
+pre code.hljs .hljs-selector-class,
+.code-block pre code.hljs .hljs-keyword,
+.code-block pre code.hljs .hljs-selector-tag,
+.code-block pre code.hljs .hljs-selector-id,
+.code-block pre code.hljs .hljs-selector-class {
+  color: var(--shiki-token-keyword);
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-title.class_ {
+  color: var(--shiki-token-type);
+}
+
+pre code.hljs .hljs-type,
+pre code.hljs .hljs-built_in,
+pre code.hljs .hljs-title.class_,
+.code-block pre code.hljs .hljs-type,
+.code-block pre code.hljs .hljs-built_in,
+.code-block pre code.hljs .hljs-title.class_ {
+  color: var(--shiki-token-type);
+}
+
+.hljs-title.function_,
+.hljs-function .hljs-title,
+.hljs-attr,
+.hljs-attribute,
+.hljs-name {
+  color: var(--shiki-token-function);
+}
+
+pre code.hljs .hljs-title.function_,
+pre code.hljs .hljs-function .hljs-title,
+pre code.hljs .hljs-attr,
+pre code.hljs .hljs-attribute,
+pre code.hljs .hljs-name,
+.code-block pre code.hljs .hljs-title.function_,
+.code-block pre code.hljs .hljs-function .hljs-title,
+.code-block pre code.hljs .hljs-attr,
+.code-block pre code.hljs .hljs-attribute,
+.code-block pre code.hljs .hljs-name {
+  color: var(--shiki-token-function);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--shiki-token-string);
+}
+
+pre code.hljs .hljs-string,
+pre code.hljs .hljs-regexp,
+pre code.hljs .hljs-symbol,
+pre code.hljs .hljs-bullet,
+.code-block pre code.hljs .hljs-string,
+.code-block pre code.hljs .hljs-regexp,
+.code-block pre code.hljs .hljs-symbol,
+.code-block pre code.hljs .hljs-bullet {
+  color: var(--shiki-token-string);
+}
+
+.hljs-punctuation,
+.hljs-operator {
+  color: var(--shiki-token-punctuation);
+}
+
+pre code.hljs .hljs-punctuation,
+pre code.hljs .hljs-operator,
+.code-block pre code.hljs .hljs-punctuation,
+.code-block pre code.hljs .hljs-operator {
+  color: var(--shiki-token-punctuation);
+}
+
+.hljs-number,
+.hljs-literal,
+.hljs-variable.constant_ {
+  color: var(--shiki-token-constant);
+}
+
+pre code.hljs .hljs-number,
+pre code.hljs .hljs-literal,
+pre code.hljs .hljs-variable.constant_,
+.code-block pre code.hljs .hljs-number,
+.code-block pre code.hljs .hljs-literal,
+.code-block pre code.hljs .hljs-variable.constant_ {
+  color: var(--shiki-token-constant);
+}
+
+.hljs-params,
+.hljs-variable,
+.hljs-template-variable {
+  color: var(--shiki-token-parameter);
+}
+
+pre code.hljs .hljs-params,
+pre code.hljs .hljs-variable,
+pre code.hljs .hljs-template-variable,
+.code-block pre code.hljs .hljs-params,
+.code-block pre code.hljs .hljs-variable,
+.code-block pre code.hljs .hljs-template-variable {
+  color: var(--shiki-token-parameter);
+}
+
+.hljs-deletion {
+  color: var(--shiki-token-deleted);
+}
+
+pre code.hljs .hljs-deletion,
+.code-block pre code.hljs .hljs-deletion {
+  color: var(--shiki-token-deleted);
+}
+
+.hljs-addition {
+  color: var(--shiki-token-inserted);
+}
+
+pre code.hljs .hljs-addition,
+.code-block pre code.hljs .hljs-addition {
+  color: var(--shiki-token-inserted);
+}
+
+.hljs-meta,
+.hljs-meta .hljs-keyword {
+  color: var(--shiki-token-comment);
+}
+
+pre code.hljs .hljs-meta,
+pre code.hljs .hljs-meta .hljs-keyword,
+.code-block pre code.hljs .hljs-meta,
+.code-block pre code.hljs .hljs-meta .hljs-keyword {
+  color: var(--shiki-token-comment);
+}
+
+.code-block-diff-line--ctx .code-block-diff-code .hljs-comment,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-quote {
+  color: var(--shiki-token-comment);
+}
+
+.code-block-diff-line--ctx .code-block-diff-code .hljs-keyword,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-selector-tag,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-selector-id,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-selector-class {
+  color: var(--shiki-token-keyword);
+}
+
+.code-block-diff-line--ctx .code-block-diff-code .hljs-type,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-built_in,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-title.class_ {
+  color: var(--shiki-token-type);
+}
+
+.code-block-diff-line--ctx .code-block-diff-code .hljs-title.function_,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-function .hljs-title,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-attr,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-attribute,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-name {
+  color: var(--shiki-token-function);
+}
+
+.code-block-diff-line--ctx .code-block-diff-code .hljs-string,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-regexp,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-symbol,
+.code-block-diff-line--ctx .code-block-diff-code .hljs-bullet {
+  color: var(--shiki-token-string);
+}
+
+.code-block-diff-line--add .code-block-diff-code .hljs-keyword,
+.code-block-diff-line--add .code-block-diff-code .hljs-selector-tag,
+.code-block-diff-line--rem .code-block-diff-code .hljs-keyword,
+.code-block-diff-line--rem .code-block-diff-code .hljs-selector-tag {
+  color: var(--shiki-token-keyword);
+}
+
+.code-block-diff-line--add .code-block-diff-code .hljs-string,
+.code-block-diff-line--rem .code-block-diff-code .hljs-string {
+  color: var(--shiki-token-string);
+}
+
+.code-block-diff-line--add .code-block-diff-code .hljs-type,
+.code-block-diff-line--add .code-block-diff-code .hljs-built_in,
+.code-block-diff-line--rem .code-block-diff-code .hljs-type,
+.code-block-diff-line--rem .code-block-diff-code .hljs-built_in {
+  color: var(--shiki-token-type);
+}
+
+.code-block-diff-line--add .code-block-diff-code .hljs-title.function_,
+.code-block-diff-line--rem .code-block-diff-code .hljs-title.function_ {
+  color: var(--shiki-token-function);
+}
+
+.code-block-diff-line--add .code-block-diff-code .hljs-number,
+.code-block-diff-line--add .code-block-diff-code .hljs-literal,
+.code-block-diff-line--rem .code-block-diff-code .hljs-number,
+.code-block-diff-line--rem .code-block-diff-code .hljs-literal {
+  color: var(--shiki-token-constant);
 }
 
 /* --- Code blocks (native renderer) --- */
@@ -706,8 +933,16 @@ header {
   font-family: var(--font-mono);
   font-size: var(--cb-font);
   line-height: var(--cb-lh);
-  color: var(--text-primary);
   white-space: pre;
+}
+
+.code-block pre code:not(.hljs) {
+  color: var(--text-primary);
+}
+
+.code-block pre code.hljs {
+  color: var(--shiki-foreground);
+  background: none;
 }
 
 .code-block code {

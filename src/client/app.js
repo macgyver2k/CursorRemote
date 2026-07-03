@@ -1,4 +1,4 @@
-/* global io */
+/* global io, hljs */
 
 (function () {
   "use strict";
@@ -996,7 +996,7 @@
       return { marker: useMarker, gutterCh };
     }
 
-    function appendDiffLineRow(body, parsed, layout) {
+    function appendDiffLineRow(body, parsed, layout, langHint) {
       const row = document.createElement("div");
       row.className =
         "code-block-diff-line code-block-diff-line--" +
@@ -1007,6 +1007,7 @@
           const code = document.createElement("span");
           code.className = "code-block-diff-code";
           code.textContent = parsed.code;
+          applySyntaxHighlight(code, langHint);
           row.appendChild(code);
         } else {
           if (layout.marker) {
@@ -1024,12 +1025,185 @@
           const code = document.createElement("span");
           code.className = "code-block-diff-code";
           code.textContent = parsed.code;
+          if (parsed.type !== "meta" && parsed.type !== "hunk") {
+            applySyntaxHighlight(code, langHint);
+          }
           row.appendChild(code);
         }
       } else {
         row.textContent = parsed.raw;
       }
       body.appendChild(row);
+    }
+
+    const HIGHLIGHT_LANG_ALIASES = {
+      js: "javascript",
+      ts: "typescript",
+      tsx: "typescript",
+      jsx: "javascript",
+      py: "python",
+      sh: "bash",
+      shell: "bash",
+      zsh: "bash",
+      yml: "yaml",
+      md: "markdown",
+      "c#": "csharp",
+      cs: "csharp",
+      "c++": "cpp",
+      h: "c",
+      hpp: "cpp",
+      rs: "rust",
+      rb: "ruby",
+      docker: "dockerfile",
+      htm: "xml",
+      html: "xml",
+      svg: "xml",
+    };
+
+    const HIGHLIGHT_EXT_LANG = {
+      ".ts": "typescript",
+      ".tsx": "typescript",
+      ".js": "javascript",
+      ".jsx": "javascript",
+      ".mjs": "javascript",
+      ".cjs": "javascript",
+      ".py": "python",
+      ".sh": "bash",
+      ".bash": "bash",
+      ".zsh": "bash",
+      ".json": "json",
+      ".yaml": "yaml",
+      ".yml": "yaml",
+      ".md": "markdown",
+      ".css": "css",
+      ".scss": "css",
+      ".less": "css",
+      ".html": "xml",
+      ".htm": "xml",
+      ".xml": "xml",
+      ".svg": "xml",
+      ".sql": "sql",
+      ".rs": "rust",
+      ".go": "go",
+      ".java": "java",
+      ".cs": "csharp",
+      ".cpp": "cpp",
+      ".cc": "cpp",
+      ".c": "c",
+      ".h": "c",
+      ".rb": "ruby",
+      ".php": "php",
+      ".swift": "swift",
+      ".kt": "kotlin",
+      ".kts": "kotlin",
+      ".dockerfile": "dockerfile",
+      ".lua": "lua",
+      ".graphql": "graphql",
+      ".gql": "graphql",
+      ".toml": "ini",
+      ".ini": "ini",
+      ".diff": "diff",
+      ".patch": "diff",
+    };
+
+    const HIGHLIGHT_AUTO_LANGS = [
+      "typescript",
+      "javascript",
+      "python",
+      "bash",
+      "json",
+      "yaml",
+      "markdown",
+      "css",
+      "xml",
+      "sql",
+      "rust",
+      "go",
+      "java",
+      "csharp",
+      "cpp",
+      "c",
+      "ruby",
+      "php",
+    ];
+
+    function parseLanguageClass(className) {
+      const m = (className || "").match(/(?:^|\s)language-([\w#+.:-]+)/);
+      return m ? m[1].toLowerCase() : "";
+    }
+
+    function normalizeHighlightLanguage(raw) {
+      if (!raw) return "";
+      const lang = String(raw).trim().toLowerCase();
+      if (!lang || lang === "text" || lang === "plaintext" || lang === "plain")
+        return "";
+      return HIGHLIGHT_LANG_ALIASES[lang] || lang;
+    }
+
+    function languageFromFilename(filename) {
+      if (!filename) return "";
+      const lower = String(filename).toLowerCase();
+      const dot = lower.lastIndexOf(".");
+      if (dot < 0) {
+        if (lower === "dockerfile" || lower.endsWith("/dockerfile"))
+          return "dockerfile";
+        if (lower === "makefile") return "bash";
+        return "";
+      }
+      return HIGHLIGHT_EXT_LANG[lower.slice(dot)] || "";
+    }
+
+    function resolveHighlightLanguage(hints) {
+      for (const hint of hints) {
+        const lang = normalizeHighlightLanguage(hint);
+        if (lang) return lang;
+      }
+      return "";
+    }
+
+    function getHljsApi() {
+      if (typeof hljs === "undefined") return null;
+      const api = hljs.default || hljs;
+      return api?.highlight ? api : null;
+    }
+
+    function applySyntaxHighlight(codeEl, langHint) {
+      const api = getHljsApi();
+      if (!codeEl || !api) return;
+      const text = codeEl.textContent || "";
+      if (!text.trim()) return;
+      const lang = resolveHighlightLanguage([
+        langHint,
+        parseLanguageClass(codeEl.className),
+      ]);
+      try {
+        let result = null;
+        if (lang && api.getLanguage(lang)) {
+          result = api.highlight(text, {
+            language: lang,
+            ignoreIllegals: true,
+          });
+        } else {
+          result = api.highlightAuto(text, HIGHLIGHT_AUTO_LANGS);
+        }
+        if (!result?.value) return;
+        codeEl.innerHTML = result.value;
+        codeEl.classList.add("hljs");
+        if (result.language) {
+          codeEl.classList.add(`language-${result.language}`);
+        }
+      } catch {
+        /* keep plain text */
+      }
+    }
+
+    function highlightCodeBlocksIn(root) {
+      if (!root || !getHljsApi()) return;
+      root.querySelectorAll("pre code").forEach((codeEl) => {
+        if (codeEl.dataset.hljsApplied === "1") return;
+        codeEl.dataset.hljsApplied = "1";
+        applySyntaxHighlight(codeEl);
+      });
     }
 
     /** Native code/diff from server `CodeBlockItem` (no mirrored Monaco HTML). */
@@ -1059,6 +1233,10 @@
 
       const body = document.createElement("div");
       body.className = "code-block-diff-plain";
+      const highlightLang = resolveHighlightLanguage([
+        item.language,
+        languageFromFilename(item.filename || filenameFallback),
+      ]);
       if (
         item.blockKind === "diff" &&
         item.diffLines &&
@@ -1073,7 +1251,7 @@
           }
         }
         for (const line of parsed) {
-          appendDiffLineRow(body, line, layout);
+          appendDiffLineRow(body, line, layout, highlightLang);
         }
       } else {
         const pre = document.createElement("pre");
@@ -1082,6 +1260,7 @@
         pre.appendChild(code);
         body.appendChild(pre);
         body.classList.add("code-block-diff-plain--raw");
+        applySyntaxHighlight(code, highlightLang);
       }
       viewport.appendChild(body);
       wrapper.appendChild(viewport);
@@ -2290,6 +2469,7 @@
         pre.appendChild(code);
         codeEl.replaceWith(pre);
       });
+      highlightCodeBlocksIn(root);
     }
 
     // --- Approvals ---

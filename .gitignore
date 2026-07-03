@@ -5,6 +5,7 @@ dist/
 .env
 
 data/
+src/client/vendor-highlight.min.js
 releases/
 temp/server.log
 tmp/

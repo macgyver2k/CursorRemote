@@ -7,6 +7,7 @@ import type { CursorState } from "../src/server/types.js";
 
 const HTML_PATH = resolve("src/client/index.html");
 const APP_JS_PATH = resolve("src/client/app.js");
+const HLJS_PATH = resolve("src/client/vendor-highlight.min.js");
 
 type EventHandler = (...args: unknown[]) => void;
 
@@ -31,6 +32,7 @@ function loadFixture(
 function createTestEnv() {
   const html = readFileSync(HTML_PATH, "utf-8");
   const appJs = readFileSync(APP_JS_PATH, "utf-8");
+  const hljsJs = readFileSync(HLJS_PATH, "utf-8");
 
   const dom = new JSDOM(html, {
     url: "http://localhost:3000/",
@@ -81,6 +83,10 @@ function createTestEnv() {
 
   const window = dom.window;
   const document = window.document;
+
+  const hljsEl = document.createElement("script");
+  hljsEl.textContent = hljsJs;
+  document.body.appendChild(hljsEl);
 
   const scriptEl = document.createElement("script");
   scriptEl.textContent = appJs;
@@ -408,6 +414,105 @@ describe("web: code block rendering", () => {
     const msgs = env.document.getElementById("messages")!;
     const assistant = msgs.querySelector(".el-assistant");
     assert.ok(assistant, "Should render assistant message (.el-assistant)");
+  });
+
+  it("applies syntax highlighting to native code blocks", () => {
+    const state: CursorState = {
+      connected: true,
+      extractorStatus: "ok",
+      lastExtractionAt: Date.now(),
+      consecutiveExtractionFailures: 0,
+      lastExtractionError: null,
+      agentStatus: "idle",
+      agentActivityText: null,
+      agentActivityLive: false,
+      agentActivitySource: "none",
+      messages: [
+        {
+          type: "assistant",
+          id: "a-hl",
+          flatIndex: 0,
+          text: "",
+          html: "<p>code</p>",
+          codeBlocks: [
+            {
+              blockKind: "code",
+              language: "typescript",
+              code: "const value: number = 1;\n",
+            },
+          ],
+        },
+      ],
+      pendingApprovals: [],
+      inputAvailable: true,
+      chatTabs: [],
+      mode: { current: "agent", available: [] },
+      model: { current: "Auto", currentId: "" },
+      windows: [],
+      activeWindowId: "",
+      composerQueue: { items: [] },
+      questionnaire: null,
+    };
+    fireFullState(env.mockSocket, state);
+    const codeEl = env.document.querySelector(".native-code-block pre code");
+    assert.ok(codeEl, "Should render native code block");
+    assert.ok(
+      codeEl!.innerHTML.includes("hljs-keyword"),
+      "Code block should contain highlighted tokens",
+    );
+  });
+
+  it("applies syntax highlighting to diff line code", () => {
+    const state: CursorState = {
+      connected: true,
+      extractorStatus: "ok",
+      lastExtractionAt: Date.now(),
+      consecutiveExtractionFailures: 0,
+      lastExtractionError: null,
+      agentStatus: "idle",
+      agentActivityText: null,
+      agentActivityLive: false,
+      agentActivitySource: "none",
+      messages: [
+        {
+          type: "assistant",
+          id: "a-diff-hl",
+          flatIndex: 0,
+          text: "",
+          html: "",
+          codeBlocks: [
+            {
+              blockKind: "diff",
+              language: "javascript",
+              filename: "app.js",
+              code: "const value = 1;\n",
+              diffLines: [
+                { kind: "ctx", text: "", code: "const value: number = 1;" },
+                { kind: "add", text: "", code: "const added: number = 2;" },
+              ],
+            },
+          ],
+        },
+      ],
+      pendingApprovals: [],
+      inputAvailable: true,
+      chatTabs: [],
+      mode: { current: "agent", available: [] },
+      model: { current: "Auto", currentId: "" },
+      windows: [],
+      activeWindowId: "",
+      composerQueue: { items: [] },
+      questionnaire: null,
+    };
+    fireFullState(env.mockSocket, state);
+    const codeSpan = env.document.querySelector(
+      ".code-block-diff-line--ctx .code-block-diff-code",
+    );
+    assert.ok(codeSpan, "Should render diff line code");
+    assert.ok(
+      codeSpan!.innerHTML.includes("hljs-keyword"),
+      "Diff line should contain highlighted tokens",
+    );
   });
 });
 

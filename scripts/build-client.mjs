@@ -1,6 +1,7 @@
-import { cpSync, mkdirSync, rmSync } from "fs";
+import { cpSync, existsSync, mkdirSync, rmSync } from "fs";
 import { dirname, join } from "path";
 import { fileURLToPath } from "url";
+import "./build-highlight.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const clientOut = join(root, "dist", "client");
@@ -17,3 +18,7 @@ cpSync(
   join(socketBase, "socket.io.min.js.map"),
   join(clientOut, "vendor-socket.io.min.js.map"),
 );
+const highlightVendor = join(root, "src", "client", "vendor-highlight.min.js");
+if (existsSync(highlightVendor)) {
+  cpSync(highlightVendor, join(clientOut, "vendor-highlight.min.js"));
+}

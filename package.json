@@ -203,9 +203,10 @@
     ]
   },
   "scripts": {
-    "dev": "tsx scripts/build-extraction-fn.mjs && mkdir -p temp data && tsx watch --exclude ./data/** --exclude ./temp/** src/server/index.ts",
+    "dev": "tsx scripts/build-extraction-fn.mjs && node scripts/build-highlight.mjs && mkdir -p temp data && tsx watch --exclude ./data/** --exclude ./temp/** src/server/index.ts",
     "setup": "bash scripts/setup.sh",
-    "build": "tsc && rm -rf dist/client && cp -r src/client dist/client && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map",
+    "build": "tsc && node scripts/build-highlight.mjs && rm -rf dist/client && cp -r src/client dist/client && cp node_modules/socket.io/client-dist/socket.io.min.js dist/client/vendor-socket.io.min.js && cp node_modules/socket.io/client-dist/socket.io.min.js.map dist/client/vendor-socket.io.min.js.map",
+    "build:highlight": "node scripts/build-highlight.mjs",
     "build:server": "tsx scripts/build-extraction-fn.mjs && node extension/esbuild.js --production --server-only && node scripts/build-client.mjs",
     "build:ext": "tsx scripts/build-extraction-fn.mjs && node extension/esbuild.js --production",
     "watch:ext": "node extension/esbuild.js --watch",
@@ -226,6 +227,7 @@
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
     "grammy": "^1.41.1",
+    "highlight.js": "^11.11.1",
     "node-html-parser": "^7.1.0",
     "socket.io": "^4.8.0",
     "ws": "^8.18.0"

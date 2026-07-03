@@ -10,6 +10,8 @@ RUN pnpm install --frozen-lockfile
 COPY scripts/build-extraction-fn.mjs scripts/build-extraction-fn.mjs
 COPY extension/esbuild.js extension/esbuild.js
 COPY scripts/build-client.mjs scripts/build-client.mjs
+COPY scripts/build-highlight.mjs scripts/build-highlight.mjs
+COPY scripts/highlight-bundle-entry.mjs scripts/highlight-bundle-entry.mjs
 COPY src src
 COPY selectors.json selectors.json
 COPY tsconfig.json tsconfig.json
